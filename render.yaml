@@ -1,0 +1,16 @@
+services:
+  - type: web
+    name: telegram-ai-bot
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: python bot.py
+    envVars:
+      - key: TELEGRAM_BOT_TOKEN
+        scope: "*"
+      - key: OPENAI_API_KEY
+        scope: "*"
+      - key: GROQ_API_KEY
+        scope: "*"
+      - key: GEMINI_API_KEY
+        scope: "*"
