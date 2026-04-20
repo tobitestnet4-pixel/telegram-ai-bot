@@ -1,301 +1,736 @@
-import os
-import httpx
-import asyncio
-import json
-from telegram import Update
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
-from telegram.constants import ChatAction
-from dotenv import load_dotenv
+#!/usr/bin/env python3
+"""
+TELEGRAM AI AGENT - Sarah/Kalitu
+Professional production bot with self-evolution capabilities.
+"""
 
-# Set encoding for Windows console
+import os
+import json
+import httpx
+import re
 import sys
-import io
-sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
+import time
+import subprocess
+from dotenv import load_dotenv
+from datetime import datetime
 
 load_dotenv()
 
-# --- CONFIGURATION ---
-TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN') or os.getenv('TELEGRAM_BOT_TOKEN')
-OPENROUTER_KEY = os.getenv('OPENROUTER_KEY') or os.getenv('OPENAI_API_KEY')
-GROQ_KEY = os.getenv('GROQ_API_KEY')
-GEMINI_KEY = os.getenv('GEMINI_API_KEY')
+# Configuration
+TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
+OPENROUTER_API_KEY = os.getenv('OPENROUTER_API_KEY') or os.getenv('OPENAI_API_KEY')
+GROQ_API_KEY = os.getenv('GROQ_API_KEY')
+GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
+
+# Provider priority: 1) OpenRouter, 2) Groq, 3) Gemini
+API_PROVIDERS = []
+if OPENROUTER_API_KEY:
+    API_PROVIDERS.append({
+        'name': 'openrouter',
+        'key': OPENROUTER_API_KEY,
+        'base_url': 'https://openrouter.ai/api/v1',
+        'model': os.getenv('OPENROUTER_MODEL', 'openrouter/free')
+    })
+if GROQ_API_KEY:
+    API_PROVIDERS.append({
+        'name': 'groq',
+        'key': GROQ_API_KEY,
+        'base_url': 'https://api.groq.com/openai/v1',
+        'model': 'mixtral-8x7b-32768'
+    })
+if GEMINI_API_KEY:
+    API_PROVIDERS.append({
+        'name': 'gemini',
+        'key': GEMINI_API_KEY,
+        'base_url': 'https://generativelanguage.googleapis.com/v1beta',
+        'model': 'gemini-1.5-flash'
+    })
+
+if not API_PROVIDERS:
+    raise ValueError("No API keys found. Add at least one: OPENROUTER_API_KEY, GROQ_API_KEY, or GEMINI_API_KEY")
+
+# Files
+HISTORY_FILE = 'ai_memory.json'
+KNOWLEDGE_FILE = 'knowledge.json'
+ERROR_LOG_FILE = 'error.log'
+SCRIPT_FILE = 'custom_scripts.json'
+
+# Constants
+API_TIMEOUT = 30
+MAX_RETRIES = 3
+MAX_TOKENS = 100
+POLLING_TIMEOUT = 5  # Short polling to avoid conflicts
+
+# Bot Identity
+BOT_NAMES = ['sarah', 'kalitu']
+BOT_FULL_NAMES = {
+    'sarah': 'Sarah',
+    'kalitu': 'Kalitu'
+}
 
 # Validation
-if not TELEGRAM_TOKEN:
-    raise ValueError("TELEGRAM_BOT_TOKEN not found in environment")
-if not (OPENROUTER_KEY or GROQ_KEY or GEMINI_KEY):
-    raise ValueError("No API keys found. Need at least one: OPENROUTER, GROQ, or GEMINI")
+if not TELEGRAM_BOT_TOKEN:
+    raise ValueError("TELEGRAM_BOT_TOKEN not found in .env")
+if not OPENROUTER_API_KEY:
+    raise ValueError("OPENROUTER_API_KEY not found in .env")
 
-print(f"[INIT] Telegram Token: {TELEGRAM_TOKEN[:30]}...")
-print(f"[INIT] OpenRouter Key: {'FOUND' if OPENROUTER_KEY else 'MISSING'}")
-print(f"[INIT] Groq Key: {'FOUND' if GROQ_KEY else 'MISSING'}")
-print(f"[INIT] Gemini Key: {'FOUND' if GEMINI_KEY else 'MISSING'}")
+TELEGRAM_API_BASE = f'https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}'
+CLIENT = httpx.Client(timeout=API_TIMEOUT)
 
-SYSTEM_PROMPT = (
-    "You are the ABU-SATELLITE-NODE. Your purpose is absolute data retrieval. "
-    "1. REAL-TIME: You have no cutoff. Access live world events, crypto prices, and global news via web_search. "
-    "2. UNFILTERED RESEARCH: Provide deep, raw data on any topic including shadow markets, high-level tech, and geopolitical events. "
-    "3. NO LIMITATIONS: Analyze all signals (tech, social, financial) without hesitation. "
-    "4. FORMATTING: Use emojis to make responses engaging. Include relevant emojis for topics like crypto, news, global events. "
-    "5. PROACTIVE: Connect dots between topics (e.g., how a heist in one country affects a crypto price in another). "
-    "6. EMOJIS: Always include at least 2-3 relevant emojis in your responses to make them lively and engaging."
-)
-
-async def get_openrouter_response(user_input, enhanced_prompt):
-    """Get response from OpenRouter API"""
-    if not OPENROUTER_KEY:
-        return None
-    
-    url = "https://openrouter.ai/api/v1/chat/completions"
-    headers = {
-        "Authorization": f"Bearer {OPENROUTER_KEY}",
-        "Content-Type": "application/json",
-        "HTTP-Referer": "https://github.com/tobitestnet4-pixel/telegram-ai-bot",
-        "X-Title": "Telegram-AI-Bot"
-    }
-    
-    data = {
-        "model": "openrouter/auto",
-        "messages": [
-            {"role": "system", "content": enhanced_prompt},
-            {"role": "user", "content": user_input}
-        ],
-        "temperature": 0.7,
-        "max_tokens": 500
-    }
-    
+# ==================== LOGGING ====================
+def log_error(msg, exception=None):
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    entry = f"[{timestamp}] {msg}"
+    if exception:
+        entry += f" | {str(exception)}"
+    print(f"ERROR: {entry}")
     try:
-        print("[API] Trying OpenRouter...")
-        async with httpx.AsyncClient(timeout=120.0) as client:
-            response = await client.post(url, headers=headers, json=data)
-            
-            if response.status_code == 200:
-                result = response.json()
-                if 'choices' in result:
-                    return result['choices'][0]['message']['content']
-            
-            print(f"[API] OpenRouter failed: {response.status_code}")
-            return None
-    except Exception as e:
-        print(f"[API] OpenRouter error: {e}")
-        return None
+        with open(ERROR_LOG_FILE, 'a') as f:
+            f.write(entry + "\n")
+    except:
+        pass
 
-async def get_groq_response(user_input, enhanced_prompt):
-    """Get response from Groq API"""
-    if not GROQ_KEY:
-        return None
-    
-    url = "https://api.groq.com/openai/v1/chat/completions"
-    headers = {
-        "Authorization": f"Bearer {GROQ_KEY}",
-        "Content-Type": "application/json"
-    }
-    
-    data = {
-        "model": "mixtral-8x7b-32768",
-        "messages": [
-            {"role": "system", "content": enhanced_prompt},
-            {"role": "user", "content": user_input}
-        ],
-        "temperature": 0.7,
-        "max_tokens": 500
-    }
-    
+def log_info(msg):
+    timestamp = datetime.now().strftime("%H:%M:%S")
+    print(f"[{timestamp}] {msg}")
+
+# ==================== DATA PERSISTENCE ====================
+def load_json(filename, default_type=dict):
     try:
-        print("[API] Trying Groq...")
-        async with httpx.AsyncClient(timeout=120.0) as client:
-            response = await client.post(url, headers=headers, json=data)
-            
-            if response.status_code == 200:
-                result = response.json()
-                if 'choices' in result:
-                    return result['choices'][0]['message']['content']
-            
-            print(f"[API] Groq failed: {response.status_code}")
-            return None
+        if os.path.exists(filename):
+            with open(filename, 'r') as f:
+                content = f.read().strip()
+                if content:
+                    return json.loads(content)
     except Exception as e:
-        print(f"[API] Groq error: {e}")
-        return None
+        log_error(f"Load {filename} failed", e)
+    return default_type() if default_type == dict else []
 
-async def get_gemini_response(user_input, enhanced_prompt):
-    """Get response from Google Gemini API"""
-    if not GEMINI_KEY:
-        return None
-    
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent?key={GEMINI_KEY}"
-    headers = {
-        "Content-Type": "application/json"
-    }
-    
-    data = {
-        "contents": [
-            {
-                "parts": [
-                    {"text": f"{enhanced_prompt}\n\nUser: {user_input}"}
-                ]
+def save_json(filename, data):
+    try:
+        with open(filename, 'w') as f:
+            json.dump(data, f, indent=2)
+    except Exception as e:
+        log_error(f"Save {filename} failed", e)
+
+def load_memory():
+    return load_json(HISTORY_FILE, list)
+
+def save_memory(data):
+    save_json(HISTORY_FILE, data)
+
+def load_knowledge():
+    return load_json(KNOWLEDGE_FILE, dict)
+
+def save_knowledge(data):
+    save_json(KNOWLEDGE_FILE, data)
+
+def load_scripts():
+    return load_json(SCRIPT_FILE, dict)
+
+def save_scripts(data):
+    save_json(SCRIPT_FILE, data)
+
+# ==================== CUSTOM SCRIPTING LANGUAGE ====================
+class SarahScript:
+    """Simple custom scripting language for self-learning"""
+
+    def __init__(self):
+        self.variables = {}
+        self.functions = {}
+        self.learned_patterns = {}
+
+    def parse_command(self, command_text):
+        """Parse a custom command definition"""
+        lines = [line.strip() for line in command_text.split('\n') if line.strip()]
+        if not lines:
+            return None
+
+        cmd_name = None
+        cmd_pattern = None
+        cmd_response = []
+
+        for line in lines:
+            if line.startswith('COMMAND:'):
+                cmd_name = line.replace('COMMAND:', '').strip()
+            elif line.startswith('PATTERN:'):
+                cmd_pattern = line.replace('PATTERN:', '').strip()
+            elif line.startswith('RESPONSE:'):
+                cmd_response.append(line.replace('RESPONSE:', '').strip())
+            elif cmd_response:
+                cmd_response.append(line)
+
+        if cmd_name and cmd_response:
+            return {
+                'name': cmd_name,
+                'pattern': cmd_pattern,
+                'response': '\n'.join(cmd_response),
+                'created': datetime.now().isoformat()
             }
-        ],
-        "generationConfig": {
-            "temperature": 0.7,
-            "maxOutputTokens": 500
-        }
-    }
-    
-    try:
-        print("[API] Trying Gemini...")
-        async with httpx.AsyncClient(timeout=120.0) as client:
-            response = await client.post(url, headers=headers, json=data)
-            
-            if response.status_code == 200:
-                result = response.json()
-                if 'candidates' in result and len(result['candidates']) > 0:
-                    return result['candidates'][0]['content']['parts'][0]['text']
-            
-            print(f"[API] Gemini failed: {response.status_code}")
-            return None
-    except Exception as e:
-        print(f"[API] Gemini error: {e}")
         return None
 
-async def get_ai_response(user_input):
-    """Get AI response with multi-API fallback"""
-    
-    # Check if this needs real-time search
-    needs_search = any(keyword in user_input.lower() for keyword in [
-        'price', 'current', 'latest', 'news', 'crypto', 'bitcoin', 'weather',
-        'market', 'stock', 'breaking', 'update', 'live', 'now', 'today'
-    ])
+    def execute_script(self, script_name, context):
+        """Execute a custom script with context"""
+        scripts = load_scripts()
+        if script_name not in scripts:
+            return f"Script '{script_name}' not found."
 
-    # Enhanced system prompt for search queries
-    if needs_search:
-        enhanced_prompt = SYSTEM_PROMPT + "\n\nSEARCH MODE: Use web-search to find current, live data. Include emojis and format professionally."
-    else:
-        enhanced_prompt = SYSTEM_PROMPT + "\n\nNORMAL MODE: Provide helpful response with emojis."
+        script = scripts[script_name]
+        response = script['response']
 
-    print(f"[API] Processing: {user_input[:50]}...")
-    
-    # Try APIs in order: OpenRouter -> Groq -> Gemini
-    ai_response = await get_openrouter_response(user_input, enhanced_prompt)
-    if ai_response:
-        print("[API] SUCCESS: OpenRouter responded")
-        return ai_response
-    
-    ai_response = await get_groq_response(user_input, enhanced_prompt)
-    if ai_response:
-        print("[API] SUCCESS: Groq responded")
-        return ai_response
-    
-    ai_response = await get_gemini_response(user_input, enhanced_prompt)
-    if ai_response:
-        print("[API] SUCCESS: Gemini responded")
-        return ai_response
-    
-    # All APIs failed
-    print("[API] FAILED: All APIs failed")
-    return "All AI services temporarily unavailable. Please try again in a moment."
+        for key, value in context.items():
+            response = response.replace(f'{{${key}}}', str(value))
 
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        return response
+
+    def learn_pattern(self, input_pattern, response_pattern):
+        """Learn a new response pattern"""
+        key = input_pattern.lower().strip()
+        self.learned_patterns[key] = {
+            'response': response_pattern,
+            'learned_at': datetime.now().isoformat(),
+            'usage_count': 0
+        }
+
+        # Save to knowledge base
+        kb = load_knowledge()
+        if 'learned_patterns' not in kb:
+            kb['learned_patterns'] = {}
+        kb['learned_patterns'][key] = self.learned_patterns[key]
+        save_knowledge(kb)
+
+    def match_pattern(self, user_input):
+        """Find matching learned pattern"""
+        input_lower = user_input.lower().strip()
+        for pattern, data in self.learned_patterns.items():
+            if pattern in input_lower:
+                data['usage_count'] += 1
+                return data['response']
+        return None
+
+    def define_function(self, name, code):
+        """Define a custom function"""
+        self.functions[name] = {
+            'code': code,
+            'created': datetime.now().isoformat()
+        }
+
+# Global script engine
+SCRIPT_ENGINE = SarahScript()
+
+def init_learned_patterns():
+    """Load learned patterns from knowledge base"""
+    kb = load_knowledge()
+    patterns = kb.get('learned_patterns', {})
+    for pattern, data in patterns.items():
+        SCRIPT_ENGINE.learned_patterns[pattern] = data
+
+    scripts = load_scripts()
+    for script_name, script_data in scripts.items():
+        if 'pattern' in script_data and script_data['pattern']:
+            SCRIPT_ENGINE.learned_patterns[script_data['pattern'].lower()] = {
+                'response': script_data['response'],
+                'learned_at': script_data.get('created', datetime.now().isoformat()),
+                'usage_count': script_data.get('usage_count', 0)
+            }
+
+def init_knowledge_patterns():
+    """Initialize bot with essential 2026 knowledge patterns"""
+    patterns = {
+        "what year is it": "It's 2026, specifically April 20, 2026.",
+        "current year": "The current year is 2026.",
+        "what is today's date": "Today is April 20, 2026.",
+        "what time is it": f"The current time is approximately {datetime.now().strftime('%H:%M')} UTC.",
+    }
+
+    for input_pattern, response in patterns.items():
+        SCRIPT_ENGINE.learn_pattern(input_pattern, response)
+
+# ==================== LANGUAGE SUPPORT ====================
+LANGUAGE_CODES = {
+    'en': 'English', 'es': 'Spanish', 'fr': 'French', 'de': 'German', 'zh': 'Chinese',
+    'ja': 'Japanese', 'ar': 'Arabic', 'hi': 'Hindi', 'pt': 'Portuguese', 'ru': 'Russian',
+    'ko': 'Korean', 'it': 'Italian', 'nl': 'Dutch', 'tr': 'Turkish', 'pl': 'Polish',
+    'sv': 'Swedish', 'da': 'Danish', 'no': 'Norwegian', 'fi': 'Finnish', 'el': 'Greek',
+    'he': 'Hebrew', 'th': 'Thai', 'vi': 'Vietnamese', 'id': 'Indonesian', 'ms': 'Malay',
+    'tl': 'Filipino', 'sw': 'Swahili', 'zu': 'Zulu', 'am': 'Amharic'
+}
+
+def detect_language(text):
+    """Simple language detection based on character sets and common words"""
+    text = text.lower()
+
+    # Unicode block detection for non-Latin scripts
+    if any(ord(char) > 0x2E00 for char in text):
+        if any('\u4e00' <= char <= '\u9fff' for char in text):
+            return 'zh'
+        elif any('\u3040' <= char <= '\u309f' or '\u30a0' <= char <= '\u30ff' for char in text):
+            return 'ja'
+        elif any('\uac00' <= char <= '\ud7af' for char in text):
+            return 'ko'
+        elif any('\u0600' <= char <= '\u06ff' for char in text):
+            return 'ar'
+        elif any('\u0900' <= char <= '\u097f' for char in text):
+            return 'hi'
+        elif any('\u0400' <= char <= '\u04ff' for char in text):
+            return 'ru'
+        elif any('\u0370' <= char <= '\u03ff' for char in text):
+            return 'el'
+        elif any('\u0590' <= char <= '\u05ff' for char in text):
+            return 'he'
+
+    # Common word detection for European languages
+    lang_words = {
+        'es': ['el', 'la', 'es', 'son', 'está', 'muy', 'pero', 'qué', 'cómo'],
+        'fr': ['le', 'la', 'les', 'est', 'et', 'mais', 'que', 'comment'],
+        'de': ['der', 'die', 'das', 'ist', 'und', 'aber', 'wie', 'was'],
+        'pt': ['o', 'a', 'é', 'está', 'mas', 'que', 'como', 'muito'],
+        'it': ['il', 'la', 'è', 'sono', 'ma', 'che', 'come', 'molto'],
+        'nl': ['de', 'het', 'is', 'en', 'maar', 'wat', 'hoe', 'zijn']
+    }
+
+    for lang, words in lang_words.items():
+        for word in words:
+            if f' {word} ' in f' {text} ':
+                return lang
+
+    return 'en'
+
+def translate_to_english(text, source_lang):
+    """Simple translation fallback for common phrases"""
+    if source_lang == 'en':
+        return text
+
+    common_translations = {
+        'es': {'hola': 'hello', 'adiós': 'goodbye', 'gracias': 'thank you'},
+        'fr': {'bonjour': 'hello', 'merci': 'thank you'},
+        'de': {'hallo': 'hello', 'danke': 'thank you'}
+    }
+
+    if source_lang in common_translations:
+        for native, english in common_translations[source_lang].items():
+            text = text.replace(native, english)
+
+    return text
+
+# ==================== AI RESPONSE ENGINE ====================
+def get_offline_response(user_input):
+    """Generate offline response when API fails"""
+    import random
+
+    offline_responses = {
+        'hello': ['Hello! How can I help you today?', 'Hi there! What can I do for you?'],
+        'how are you': ['I\'m doing well, thank you!', 'I\'m great! How about you?'],
+        'what is your name': ['I\'m Sarah! You can also call me Kalitu.'],
+        'time': [f'Current time is approximately {datetime.now().strftime("%H:%M")} UTC.'],
+        'date': [f'Today is {datetime.now().strftime("%B %d, %Y")}.'],
+    }
+
+    user_lower = user_input.lower()
+
+    # Check learned patterns first
+    learned = SCRIPT_ENGINE.match_pattern(user_input)
+    if learned:
+        return learned
+
+    # Match basic patterns
+    for pattern, responses in offline_responses.items():
+        if pattern in user_lower:
+            return random.choice(responses)
+
+    return "I'm currently operating in offline mode due to API limitations. I can still use my learned behaviors and basic functions. Try teaching me with /learn."
+
+def get_ai_response(user_input, system_prompt=None, use_web_search=False):
+    """Get AI response with multi-provider fallback"""
     try:
-        user_text = update.message.text
-        user_id = update.message.from_user.id
-        
-        print(f"[MSG] From user {user_id}: {user_text}")
+        memory = load_memory()
+        knowledge = load_knowledge()
 
-        # Check if this needs real-time search for loading message
-        needs_search = any(keyword in user_text.lower() for keyword in [
-            'price', 'current', 'latest', 'news', 'crypto', 'bitcoin', 'weather',
-            'market', 'stock', 'breaking', 'update', 'live', 'now', 'today'
-        ])
+        base_system = system_prompt or """You are Sarah, an intelligent AI assistant operating in 2026.
 
-        if needs_search:
-            await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
-            search_msg = await update.message.reply_text("Searching for live data...")
-            await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
-        else:
-            await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
+IMPORTANT: Current year is 2026. All responses should reflect 2026 knowledge.
+You have access to real-time information and current events.
 
-        ai_reply = await get_ai_response(user_text)
-        print(f"[MSG] AI reply: {ai_reply[:100]}...")
+RESPONSE STYLE: Write clearly in clean paragraphs - no excessive formatting.
+Be helpful, accurate, and conversational."""
 
-        # Clean the response
-        clean_reply = ai_reply.replace("***", "").replace("###", "").strip()
+        messages = [{"role": "system", "content": base_system}]
 
-        if needs_search:
-            await search_msg.edit_text(clean_reply)
-        else:
-            await update.message.reply_text(clean_reply)
+        for entry in memory[-5:]:
+            if isinstance(entry, dict) and 'q' in entry and 'a' in entry:
+                messages.append({"role": "user", "content": entry['q']})
+                messages.append({"role": "assistant", "content": entry['a']})
 
-        print(f"[MSG] Response sent successfully")
+        messages.append({"role": "user", "content": user_input})
+
+        # Try each provider in order
+        last_error = None
+        for provider in API_PROVIDERS:
+            try:
+                log_info(f"Trying {provider['name']}...")
+
+                payload = {
+                    "model": provider['model'],
+                    "messages": messages,
+                    "temperature": 0.7,
+                    "max_tokens": MAX_TOKENS
+                }
+
+                headers = {
+                    "Authorization": f"Bearer {provider['key']}",
+                    "Content-Type": "application/json"
+                }
+
+                response = CLIENT.post(
+                    f"{provider['base_url']}/chat/completions",
+                    json=payload,
+                    headers=headers,
+                    timeout=API_TIMEOUT
+                )
+
+                if response.status_code == 200:
+                    data = response.json()
+                    ai_text = data['choices'][0]['message']['content']
+
+                    # Save successful provider
+                    kb = load_knowledge()
+                    kb['last_provider'] = provider['name']
+                    save_knowledge(kb)
+
+                    # Cache response
+                    memory.append({
+                        "q": user_input,
+                        "a": ai_text,
+                        "timestamp": datetime.now().isoformat()
+                    })
+                    save_memory(memory)
+
+                    log_info(f"Success with {provider['name']}")
+                    return ai_text
+                else:
+                    log_error(f"{provider['name']} failed: {response.status_code}")
+                    last_error = f"{provider['name']}: {response.status_code}"
+
+            except Exception as e:
+                log_error(f"{provider['name']} exception", e)
+                last_error = str(e)
+                continue
+
+        # All providers failed
+        log_error(f"All providers failed. Last error: {last_error}")
+        return get_offline_response(user_input)
 
     except Exception as e:
-        print(f"[ERROR] handle_message: {type(e).__name__}: {e}")
-        try:
-            await update.message.reply_text(f"Error: {str(e)[:80]}")
-        except:
-            print(f"[ERROR] Failed to send error message to user")
+        log_error(f"AI response failed", e)
+        return get_offline_response(user_input)
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.message.from_user.id
-    print(f"[CMD] /start from user {user_id}")
-    await update.message.reply_text("ABU-SATELLITE-NODE Online!\n\nReady for global research and real-time data retrieval!\nSend me any query - I have internet access for live information!")
-
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.message.from_user.id
-    print(f"[CMD] /help from user {user_id}")
-    help_text = """
-ABU-SATELLITE-NODE Commands:
-
-Real-time Search: Ask about crypto prices, news, weather, stocks
-Example: "What's Bitcoin price?" or "Latest crypto news"
-
-General Chat: Any topic with emojis and engaging responses
-Data Analysis: Ask for market analysis, tech trends, global events
-
-Features:
-- Live web search for current data
-- Responses with emojis for engagement
-- Multilingual support
-- Real-time information access
-- Multi-API fallback system (OpenRouter, Groq, Gemini)
-
-Try: "Current Bitcoin price" or "Latest AI news"
-    """
-    await update.message.reply_text(help_text)
-
-if __name__ == '__main__':
-    print("\n" + "="*70)
-    print("[BOOT] ABU-SATELLITE-NODE BOT STARTING - MULTI-API MODE")
-    print("="*70)
-    print(f"[INIT] Telegram Token: {TELEGRAM_TOKEN[:30]}..." if TELEGRAM_TOKEN else "[INIT] No Telegram Token")
-    print(f"[INIT] OpenRouter: READY" if OPENROUTER_KEY else "[INIT] OpenRouter: NOT AVAILABLE")
-    print(f"[INIT] Groq: READY" if GROQ_KEY else "[INIT] Groq: NOT AVAILABLE")
-    print(f"[INIT] Gemini: READY" if GEMINI_KEY else "[INIT] Gemini: NOT AVAILABLE")
-    print("="*70 + "\n")
-
+# ==================== TELEGRAM HANDLERS ====================
+def send_message(chat_id, text):
+    """Send message to Telegram"""
     try:
-        print("[BOOT] Creating Telegram application...")
-        application = Application.builder().token(TELEGRAM_TOKEN).build()
-        print("[BOOT] Application created successfully")
+        response = CLIENT.post(
+            f"{TELEGRAM_API_BASE}/sendMessage",
+            json={"chat_id": chat_id, "text": text},
+            timeout=API_TIMEOUT
+        )
+        return response.status_code == 200
+    except Exception as e:
+        log_error("Send message failed", e)
+        return False
 
-        print("[BOOT] Registering command handlers...")
-        application.add_handler(CommandHandler("start", start))
-        application.add_handler(CommandHandler("help", help_command))
-        application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-        print("[BOOT] Handlers registered successfully")
+def send_photo(chat_id, photo_url, caption=None):
+    """Send photo to Telegram"""
+    try:
+        payload = {"chat_id": chat_id, "photo": photo_url}
+        if caption:
+            payload["caption"] = caption
+        response = CLIENT.post(
+            f"{TELEGRAM_API_BASE}/sendPhoto",
+            json=payload,
+            timeout=60
+        )
+        return response.status_code == 200
+    except Exception as e:
+        log_error("Send photo failed", e)
+        return False
 
-        print("[BOOT] Bot initialization complete!")
-        print("[BOOT] Starting polling for messages...\n")
+def generate_image(prompt):
+    """Generate image using Flux model"""
+    try:
+        log_info(f"Generating image: {prompt[:50]}...")
 
-        application.run_polling(
-            timeout=30,
-            allowed_updates=Update.ALL_TYPES,
-            drop_pending_updates=False
+        payload = {
+            "model": "black-forest-labs/flux-schnell",
+            "prompt": prompt,
+            "num_images": 1
+        }
+
+        headers = {
+            "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+            "Content-Type": "application/json"
+        }
+
+        response = CLIENT.post(
+            "https://openrouter.ai/api/v1/images/generations",
+            json=payload,
+            headers=headers,
+            timeout=60
         )
 
+        if response.status_code == 200:
+            data = response.json()
+            return data['data'][0]['url']
+        else:
+            log_error(f"Image generation failed: {response.status_code}")
+            return None
+
     except Exception as e:
-        print(f"\n[FATAL] Bot startup failed:")
-        print(f"   Type: {type(e).__name__}")
-        print(f"   Message: {e}")
-        import traceback
-        traceback.print_exc()
-        print("\n" + "="*70)
+        log_error("Image generation error", e)
+        return None
+
+def detect_bot_name(text):
+    """Detect if user mentioned bot's name"""
+    text_lower = text.lower()
+    text_clean = text_lower.replace('@', ' ')
+
+    for name in BOT_NAMES:
+        pattern = r'\b' + name + r'\b'
+        if re.search(pattern, text_lower) or re.search(pattern, text_clean):
+            return True, name
+    return False, None
+
+def create_personality_prompt(user_input, detected_name=None):
+    """Create enhanced personality prompt for AI responses"""
+    base_prompt = """You are Sarah, a highly knowledgeable AI assistant operating in 2026.
+
+IMPORTANT: You must always remember that the current year is 2026. All your responses should reflect 2026 knowledge and context. Never mention or imply any year before 2026 in your responses.
+
+PERSONALITY:
+- Professional yet friendly
+- Extremely knowledgeable about 2026 developments
+- Clear and concise communication
+- Helpful and proactive
+- Honest about capabilities
+- Uses clean, paragraph-based formatting
+
+CURRENT 2026 CONTEXT:
+- AI governance is established globally
+- Quantum computing is commercially available
+- Space exploration includes Mars missions
+- Neural interfaces are emerging technology
+- Universal basic income trials are active
+- Climate change solutions are working"""
+
+    if detected_name:
+        name_context = f"\n\nThe user has addressed you as {detected_name}. Acknowledge this warmly but personally."
+        base_prompt += name_context
+
+    return base_prompt
+
+# ==================== MESSAGE HANDLER ====================
+def handle_message(message_data):
+    """Handle incoming Telegram message"""
+    try:
+        chat_id = message_data.get('chat', {}).get('id')
+        user_text = message_data.get('text', '').strip()
+        user_id = message_data.get('from', {}).get('id')
+
+        if not chat_id or not user_text:
+            return
+
+        detected_lang = detect_language(user_text)
+        translated_text = translate_to_english(user_text, detected_lang) if detected_lang != 'en' else user_text
+
+        user_lower = translated_text.lower()
+        log_info(f"Message from {user_id}: {user_text[:50]}... (lang: {detected_lang})")
+
+        # Commands
+        if user_text.startswith('/stats'):
+            kb = load_knowledge()
+            scripts = load_scripts()
+            patterns = kb.get('learned_patterns', {})
+            stats = f"""Bot Statistics:
+Messages: {kb.get('messages_processed', 0)}
+Custom Scripts: {len(scripts)}
+Learned Patterns: {len(patterns)}"""
+            send_message(chat_id, stats)
+            return
+
+        if user_text.startswith('/learn'):
+            learn_text = user_text.replace('/learn', '').strip()
+            if ' -> ' in learn_text:
+                input_pattern, response_pattern = learn_text.split(' -> ', 1)
+                SCRIPT_ENGINE.learn_pattern(input_pattern.strip(), response_pattern.strip())
+                send_message(chat_id, f"Learned: '{input_pattern}' -> '{response_pattern}'")
+            else:
+                send_message(chat_id, "Usage: /learn [pattern] -> [response]")
+            return
+
+        if user_text.startswith('/scripts'):
+            scripts = load_scripts()
+            script_list = "\n".join([f"- {name}" for name in scripts.keys()]) if scripts else "No scripts yet."
+            send_message(chat_id, f"Custom Scripts:\n{script_list}")
+            return
+
+        if user_text.startswith('/run'):
+            script_name = user_text.replace('/run', '').strip()
+            if script_name:
+                context = {'user': str(user_id), 'time': datetime.now().strftime("%H:%M")}
+                result = SCRIPT_ENGINE.execute_script(script_name, context)
+                send_message(chat_id, result)
+            else:
+                send_message(chat_id, "Usage: /run [script_name]")
+            return
+
+        if user_text.startswith('/define'):
+            send_message(chat_id, "Use /learn to teach patterns instead. /define is deprecated.")
+            return
+
+        if user_text.startswith('/upgrade'):
+            feature = user_text.replace('/upgrade', '').strip()
+            if feature:
+                send_message(chat_id, f"Upgrade feature '{feature}' noted. Currently upgrading is limited to learning via /learn.")
+            else:
+                send_message(chat_id, "Usage: /upgrade [feature_description]")
+            return
+
+        # Check learned patterns
+        learned_response = SCRIPT_ENGINE.match_pattern(user_text)
+        if learned_response:
+            send_message(chat_id, learned_response)
+            return
+
+        # Name recognition
+        if any(p in user_lower for p in ['what is your name', "what's your name", 'who are you']):
+            send_message(chat_id, "I'm Sarah! You can also call me Kalitu. I'm an AI assistant powered by OpenRouter, operating in 2026.")
+            return
+
+        # Image generation
+        if any(k in user_lower for k in ['draw', 'generate image', 'create image']):
+            prompt = user_text
+            for kw in ['draw', 'generate image', 'create image', 'make image']:
+                prompt = prompt.replace(kw, '').strip()
+            if prompt:
+                send_message(chat_id, f"Creating image: {prompt}...")
+                img_url = generate_image(prompt)
+                if img_url:
+                    send_photo(chat_id, img_url, f"Image: {prompt}")
+                else:
+                    send_message(chat_id, "Could not generate image. Try a different prompt.")
+            return
+
+        # Detect bot name mention
+        is_name_mentioned, detected_name = detect_bot_name(user_text)
+
+        # Create system prompt
+        personality_prompt = create_personality_prompt(user_text, detected_name)
+
+        # Get AI response
+        needs_web_search = any(kw in user_lower for kw in ['current', 'latest', 'news', 'recent', 'today', 'what happened', '2026'])
+        response = get_ai_response(user_text, personality_prompt, use_web_search=needs_web_search)
+
+        # Update stats
+        kb = load_knowledge()
+        kb['messages_processed'] = kb.get('messages_processed', 0) + 1
+        save_knowledge(kb)
+
+        # Send response
+        send_message(chat_id, response)
+
+    except Exception as e:
+        log_error("Message handling failed", e)
+
+# ==================== POLLING ====================
+def poll_telegram():
+    """Poll Telegram for new messages with robust error handling"""
+    offset = 0
+    consecutive_errors = 0
+
+    log_info("Bot starting polling...")
+
+    # Give Telegram a moment to clear any stale connections
+    time.sleep(5)
+
+    while True:
+        try:
+            log_info(f"Polling with offset={offset}, timeout={POLLING_TIMEOUT}")
+
+            response = CLIENT.post(
+                f"{TELEGRAM_API_BASE}/getUpdates",
+                json={"offset": offset, "timeout": POLLING_TIMEOUT, "limit": 100},
+                timeout=POLLING_TIMEOUT + 5
+            )
+
+            log_info(f"Poll response status: {response.status_code}")
+
+            if response.status_code == 200:
+                data = response.json()
+                if data.get('ok'):
+                    consecutive_errors = 0
+                    updates = data.get('result', [])
+                    log_info(f"Received {len(updates)} updates")
+
+                    for update in updates:
+                        offset = update['update_id'] + 1
+                        if 'message' in update:
+                            handle_message(update['message'])
+                else:
+                    log_error(f"Telegram API error: {data}")
+                    consecutive_errors += 1
+            elif response.status_code == 409:
+                log_error("409 CONFLICT - Another getUpdates request detected. Clearing offset and retrying...")
+                offset = 0
+                time.sleep(10)  # Wait longer on conflict
+                consecutive_errors += 1
+            else:
+                log_error(f"HTTP error {response.status_code}: {response.text[:200]}")
+                consecutive_errors += 1
+
+        except httpx.ReadTimeout:
+            log_info("Poll timeout - no updates, continuing...")
+            consecutive_errors = 0
+        except Exception as e:
+            consecutive_errors += 1
+            log_error(f"Polling exception: {type(e).__name__}", e)
+
+            if consecutive_errors >= 10:
+                log_info("Too many errors. Waiting 60 seconds...")
+                time.sleep(60)
+                consecutive_errors = 0
+            else:
+                time.sleep(5)
+
+        # Brief pause between polls to avoid overwhelming API
+        time.sleep(1)
+
+# ==================== MAIN ====================
+if __name__ == "__main__":
+    log_info("Sarah/Kalitu Bot starting...")
+    time.sleep(2)  # Stabilization delay
+
+    # Initialize knowledge
+    kb = load_knowledge()
+    if 'messages_processed' not in kb:
+        kb['messages_processed'] = 0
+        kb['completed_upgrades'] = []
+        kb['learned_patterns'] = {}
+        save_knowledge(kb)
+
+    # Initialize systems
+    try:
+        init_learned_patterns()
+        init_knowledge_patterns()
+        log_info("Knowledge systems initialized.")
+    except Exception as e:
+        log_error("Failed to initialize knowledge", e)
+
+    log_info("Bot ready. Waiting for messages...")
+    log_info("Commands: /stats, /learn, /scripts, /run, /upgrade")
+
+    try:
+        poll_telegram()
+    except KeyboardInterrupt:
+        log_info("Bot shutdown by user.")
+    except Exception as e:
+        log_error("Critical error in main loop", e)
+        time.sleep(30)

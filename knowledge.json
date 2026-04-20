@@ -1,27 +1,8 @@
 {
-  "version": "3.0",
-  "model": "meta-llama/llama-2-70b-chat",
-  "learned_facts": [],
+  "messages_processed": 0,
+  "learned_patterns": {},
   "completed_upgrades": [],
-  "api_knowledge": {
-    "openrouter": {
-      "base_url": "https://openrouter.ai/api/v1",
-      "current_model": "meta-llama/llama-2-70b-chat",
-      "token_limit": 150,
-      "timeout": 30,
-      "free_tier": true,
-      "credit_limit": "UNLIMITED (Llama is FREE)"
-    }
-  },
-  "code_improvements": [],
-  "uptime_hours": 0,
-  "messages_processed": 54,
-  "features": {
-    "offline_mode": true,
-    "power_persistence": true,
-    "error_logging": true,
-    "retry_logic": true,
-    "conversation_memory": true
-  },
-  "startup_time": "2026-04-19T21:16:24.820785"
+  "current_year": 2026,
+  "free_tier": true,
+  "supported_languages": ["en", "es", "fr", "de", "zh", "ja", "ar", "hi", "pt", "ru", "ko", "it", "nl", "tr", "pl", "sv", "da", "no", "fi", "el", "he", "th", "vi", "id", "ms", "tl", "sw", "zu", "am"]
 }
