@@ -1,6 +1,7 @@
 import os
 import httpx
 import asyncio
+import json
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 from telegram.constants import ChatAction
@@ -11,13 +12,16 @@ load_dotenv()
 # --- CONFIGURATION ---
 TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN') or os.getenv('TELEGRAM_BOT_TOKEN')
 API_KEY = os.getenv('OPENROUTER_KEY') or os.getenv('OPENROUTER_API_KEY') or os.getenv('OPENAI_API_KEY')
-MODEL_NAME = "openrouter/free"  # Free tier model
+MODEL_NAME = "openrouter/auto"  # Auto-select best available free model
 
 # Validation
 if not TELEGRAM_TOKEN:
     raise ValueError("TELEGRAM_TOKEN not found in environment")
 if not API_KEY:
-    raise ValueError("OPENROUTER_KEY not found in environment")
+    raise ValueError("API_KEY not found in environment")
+
+print(f"[INIT] Telegram Token: {TELEGRAM_TOKEN[:30]}...")
+print(f"[INIT] API Key: {API_KEY[:30]}...")
 
 SYSTEM_PROMPT = (
     "You are the ABU-SATELLITE-NODE. Your purpose is absolute data retrieval. "
@@ -30,12 +34,22 @@ SYSTEM_PROMPT = (
 )
 
 async def get_ai_response(user_input):
+    """Get AI response with proper OpenRouter authentication"""
     url = "https://openrouter.ai/api/v1/chat/completions"
+    
+    # Verify API key format
+    if not API_KEY or len(API_KEY) < 20:
+        return "🚨 API Key Error: Invalid or missing API key 😞"
+    
     headers = {
         "Authorization": f"Bearer {API_KEY}",
-        "Content-Type": "application/json"
+        "Content-Type": "application/json",
+        "HTTP-Referer": "https://github.com/tobitestnet4-pixel/telegram-ai-bot",
+        "X-Title": "Telegram-AI-Bot"
     }
 
+    print(f"[API] Headers: Authorization present: {bool(headers.get('Authorization'))}")
+    
     # Check if this needs real-time search
     needs_search = any(keyword in user_input.lower() for keyword in [
         'price', 'current', 'latest', 'news', 'crypto', 'bitcoin', 'weather',
@@ -48,27 +62,44 @@ async def get_ai_response(user_input):
     else:
         enhanced_prompt = SYSTEM_PROMPT + "\n\n💬 NORMAL MODE: Provide helpful response with emojis for engagement."
 
-    # This structure enables the "Internet Eyes" for the AI
+    # Request payload
     data = {
         "model": MODEL_NAME,
         "messages": [
             {"role": "system", "content": enhanced_prompt},
             {"role": "user", "content": user_input}
         ],
-        "temperature": 0.7
+        "temperature": 0.7,
+        "top_p": 0.9,
+        "max_tokens": 500
     }
 
     # Add web search plugin for real-time queries
     if needs_search:
         data["plugins"] = [{"id": "web-search"}]
 
-    async with httpx.AsyncClient(timeout=60.0) as client:
-        try:
-            response = await client.post(url, headers=headers, json=data)
-            result = response.json()
+    print(f"[API] Sending request to {url}")
+    print(f"[API] Model: {data['model']}")
+    print(f"[API] Needs search: {needs_search}")
 
+    try:
+        async with httpx.AsyncClient(timeout=120.0, limits=httpx.Limits(max_connections=1)) as client:
+            response = await client.post(url, headers=headers, json=data)
+            
+            print(f"[API] Response status: {response.status_code}")
+            
+            # Try to parse response
+            try:
+                result = response.json()
+            except:
+                print(f"[API] Raw response: {response.text[:200]}")
+                return f"🚨 API Error: Invalid response format 😞"
+            
+            print(f"[API] Response keys: {result.keys() if isinstance(result, dict) else 'not a dict'}")
+            
             if response.status_code == 200 and 'choices' in result:
                 ai_response = result['choices'][0]['message']['content']
+                print(f"[API] Response received: {ai_response[:100]}...")
 
                 # Ensure emojis are included
                 if not any(char in ai_response for char in ['🎯', '📊', '🌐', '💰', '📰', '🌍', '🔍', '💬', '⚡', '🚀']):
@@ -76,23 +107,37 @@ async def get_ai_response(user_input):
 
                 return ai_response
             else:
-                return f"🚨 API Error: {result.get('error', {}).get('message', 'Unknown error')} 😞"
+                error_msg = result.get('error', {})
+                if isinstance(error_msg, dict):
+                    error_text = error_msg.get('message', str(error_msg))
+                else:
+                    error_text = str(error_msg)
+                    
+                print(f"[API] Error response: {error_text}")
+                return f"🚨 API Error: {error_text} 😞"
 
-        except Exception as e:
-            return f"📡 Signal Error: {str(e)} 🔧"
+    except httpx.TimeoutException:
+        print(f"[API] Timeout error")
+        return "🚨 API Timeout: Request took too long 😞"
+    except httpx.HTTPError as e:
+        print(f"[API] HTTP Error: {e}")
+        return f"🚨 API Connection Error: {str(e)[:100]} 🔧"
+    except Exception as e:
+        print(f"[API] Unexpected error: {type(e).__name__}: {e}")
+        return f"📡 Signal Error: {str(e)[:100]} 🔧"
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         user_text = update.message.text
-        print(f"DEBUG: Received message: {user_text}")
+        user_id = update.message.from_user.id
+        
+        print(f"[MSG] From user {user_id}: {user_text}")
 
         # Check if this needs real-time search for loading message
         needs_search = any(keyword in user_text.lower() for keyword in [
             'price', 'current', 'latest', 'news', 'crypto', 'bitcoin', 'weather',
             'market', 'stock', 'breaking', 'update', 'live', 'now', 'today'
         ])
-
-        print(f"DEBUG: Needs search: {needs_search}")
 
         if needs_search:
             # Show searching message first
@@ -104,7 +149,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
 
         ai_reply = await get_ai_response(user_text)
-        print(f"DEBUG: AI reply received: {ai_reply[:100]}...")
+        print(f"[MSG] AI reply: {ai_reply[:100]}...")
 
         # Clean the response from any leftover bot-talk or symbols
         clean_reply = ai_reply.replace("***", "").replace("###", "").strip()
@@ -119,16 +164,23 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             await update.message.reply_text(clean_reply)
 
-        print(f"DEBUG: Response sent successfully")
+        print(f"[MSG] Response sent successfully")
 
     except Exception as e:
-        print(f"ERROR in handle_message: {e}")
-        await update.message.reply_text(f"🚨 Error processing message: {str(e)} 🔧")
+        print(f"[ERROR] handle_message: {type(e).__name__}: {e}")
+        try:
+            await update.message.reply_text(f"🚨 Error: {str(e)[:80]} 🔧")
+        except:
+            print(f"[ERROR] Failed to send error message to user")
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.message.from_user.id
+    print(f"[CMD] /start from user {user_id}")
     await update.message.reply_text("🚀 ABU-SATELLITE-NODE Online! 🌐\n\n📡 Ready for global research and real-time data retrieval!\n💬 Send me any query - I have internet access for live information! 🔍")
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.message.from_user.id
+    print(f"[CMD] /help from user {user_id}")
     help_text = """
 🎯 **ABU-SATELLITE-NODE Commands:**
 
@@ -149,30 +201,43 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(help_text)
 
 if __name__ == '__main__':
-    print("DEBUG: Starting bot...")
-    print(f"DEBUG: Telegram token: {TELEGRAM_TOKEN[:20]}..." if TELEGRAM_TOKEN else "No token")
-    print(f"DEBUG: API key: {API_KEY[:20]}..." if API_KEY else "No API key")
-    print("Satellite is scanning... (Bot started)")
-    print(f"Using model: {MODEL_NAME}")
+    print("\n" + "="*60)
+    print("🚀 ABU-SATELLITE-NODE BOT STARTING")
+    print("="*60)
+    print(f"[INIT] Telegram Token: {TELEGRAM_TOKEN[:30]}..." if TELEGRAM_TOKEN else "[INIT] ❌ No Telegram Token")
+    print(f"[INIT] API Key: {API_KEY[:30]}..." if API_KEY else "[INIT] ❌ No API Key")
+    print(f"[INIT] Model: {MODEL_NAME}")
+    print("="*60 + "\n")
 
     try:
-        print("DEBUG: Creating application...")
+        print("[BOOT] Creating Telegram application...")
         application = Application.builder().token(TELEGRAM_TOKEN).build()
-        print("DEBUG: Application created")
+        print("[BOOT] ✅ Application created")
 
-        print("DEBUG: Adding handlers...")
+        print("[BOOT] Registering command handlers...")
         application.add_handler(CommandHandler("start", start))
         application.add_handler(CommandHandler("help", help_command))
         application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-        print("DEBUG: Handlers added")
+        print("[BOOT] ✅ Handlers registered")
 
-        print("Bot initialized successfully!")
-        print("Ready for messages...")
-        print("DEBUG: Starting polling...")
-        application.run_polling()
+        print("[BOOT] Bot initialization complete!")
+        print("[BOOT] Starting polling for messages...\n")
+
+        application.run_polling(
+            poll_interval=1.0,
+            timeout=30,
+            read_timeout=30,
+            write_timeout=30,
+            connect_timeout=15,
+            pool_timeout=30,
+            allowed_updates=Update.ALL_TYPES,
+            drop_pending_updates=False
+        )
 
     except Exception as e:
-        print(f"Bot failed to start: {e}")
-        print("Check your environment variables")
+        print(f"\n❌ [FATAL] Bot startup failed:")
+        print(f"   Type: {type(e).__name__}")
+        print(f"   Message: {e}")
         import traceback
         traceback.print_exc()
+        print("\n" + "="*60)
