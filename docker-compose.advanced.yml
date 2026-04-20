@@ -1,0 +1,160 @@
+version: '3.8'
+
+# 🐳 TELEGRAM AI BOT - ADVANCED DOCKER COMPOSE
+# Production-ready setup with monitoring and logging
+
+services:
+  # ═══════════════════════════════════════════════════════════════════
+  # MAIN BOT SERVICE
+  # ═══════════════════════════════════════════════════════════════════
+  telegram-bot:
+    container_name: telegram-ai-bot
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        BUILDKIT_INLINE_CACHE: 1
+    
+    # Restart policy
+    restart: unless-stopped
+    
+    # Environment variables
+    environment:
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - OPENROUTER_API_KEY=${OPENAI_API_KEY}
+      - OPENROUTER_MODEL=${OPENROUTER_MODEL:-openrouter/free}
+      - OPENROUTER_BASE_URL=${OPENROUTER_BASE_URL:-https://openrouter.ai/api/v1}
+      - PYTHONUNBUFFERED=1
+      - PYTHONDONTWRITEBYTECODE=1
+    
+    # Volume mounts for persistence
+    volumes:
+      - ./ai_memory.json:/app/ai_memory.json:rw
+      - ./knowledge.json:/app/knowledge.json:rw
+      - ./error.log:/app/error.log:rw
+      - ./offline_responses.json:/app/offline_responses.json:rw
+    
+    # Health check
+    healthcheck:
+      test: ["CMD", "python", "-c", "import httpx; httpx.get('https://www.google.com', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 5s
+    
+    # Resource limits (optional, adjust based on your host)
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 512M
+        reservations:
+          cpus: '0.5'
+          memory: 256M
+    
+    # Logging configuration
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+        labels: "service=telegram-bot"
+    
+    # Network
+    networks:
+      - bot-network
+    
+    # Security options
+    security_opt:
+      - no-new-privileges:true
+    
+    # Read-only root filesystem (optional, set to true for extra security)
+    # read_only: true
+    
+    # Depends on services (add monitoring service if you want)
+    depends_on:
+      - bot-init
+
+  # ═══════════════════════════════════════════════════════════════════
+  # INITIALIZATION SERVICE (Optional)
+  # Runs once to validate configuration before starting bot
+  # ═══════════════════════════════════════════════════════════════════
+  bot-init:
+    image: python:3.11-slim
+    container_name: telegram-bot-init
+    command: >
+      sh -c "
+      echo '✅ Validating configuration...' &&
+      python -c '
+      import os
+      token = os.getenv(\"TELEGRAM_BOT_TOKEN\")
+      api_key = os.getenv(\"OPENAI_API_KEY\")
+      if not token or not api_key:
+        print(\"❌ Missing credentials!\")
+        exit(1)
+      print(\"✅ Configuration valid\")
+      ' &&
+      echo '✅ Init complete'
+      "
+    environment:
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+    networks:
+      - bot-network
+    restart: "no"
+
+  # ═══════════════════════════════════════════════════════════════════
+  # OPTIONAL: PROMETHEUS METRICS (Uncomment to enable monitoring)
+  # ═══════════════════════════════════════════════════════════════════
+  # prometheus:
+  #   image: prom/prometheus:latest
+  #   container_name: telegram-bot-prometheus
+  #   volumes:
+  #     - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+  #     - prometheus-data:/prometheus
+  #   ports:
+  #     - "9090:9090"
+  #   command:
+  #     - "--config.file=/etc/prometheus/prometheus.yml"
+  #     - "--storage.tsdb.path=/prometheus"
+  #   networks:
+  #     - bot-network
+  #   restart: unless-stopped
+
+  # ═══════════════════════════════════════════════════════════════════
+  # OPTIONAL: GRAFANA DASHBOARD (Uncomment to enable)
+  # ═══════════════════════════════════════════════════════════════════
+  # grafana:
+  #   image: grafana/grafana:latest
+  #   container_name: telegram-bot-grafana
+  #   ports:
+  #     - "3000:3000"
+  #   environment:
+  #     - GF_SECURITY_ADMIN_PASSWORD=admin
+  #   volumes:
+  #     - grafana-data:/var/lib/grafana
+  #   depends_on:
+  #     - prometheus
+  #   networks:
+  #     - bot-network
+  #   restart: unless-stopped
+
+# ═══════════════════════════════════════════════════════════════════
+# NETWORKS
+# ═══════════════════════════════════════════════════════════════════
+networks:
+  bot-network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16
+
+# ═══════════════════════════════════════════════════════════════════
+# VOLUMES (Optional, for monitoring)
+# ═══════════════════════════════════════════════════════════════════
+# volumes:
+#   prometheus-data:
+#     driver: local
+#   grafana-data:
+#     driver: local
