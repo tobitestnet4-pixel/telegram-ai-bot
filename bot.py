@@ -7,6 +7,11 @@ from telegram.ext import Application, CommandHandler, MessageHandler, filters, C
 from telegram.constants import ChatAction
 from dotenv import load_dotenv
 
+# Set encoding for Windows console
+import sys
+import io
+sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
+
 load_dotenv()
 
 # --- CONFIGURATION ---
@@ -22,16 +27,16 @@ if not (OPENROUTER_KEY or GROQ_KEY or GEMINI_KEY):
     raise ValueError("No API keys found. Need at least one: OPENROUTER, GROQ, or GEMINI")
 
 print(f"[INIT] Telegram Token: {TELEGRAM_TOKEN[:30]}...")
-print(f"[INIT] OpenRouter Key: {'✅ Found' if OPENROUTER_KEY else '❌ Missing'}")
-print(f"[INIT] Groq Key: {'✅ Found' if GROQ_KEY else '❌ Missing'}")
-print(f"[INIT] Gemini Key: {'✅ Found' if GEMINI_KEY else '❌ Missing'}")
+print(f"[INIT] OpenRouter Key: {'FOUND' if OPENROUTER_KEY else 'MISSING'}")
+print(f"[INIT] Groq Key: {'FOUND' if GROQ_KEY else 'MISSING'}")
+print(f"[INIT] Gemini Key: {'FOUND' if GEMINI_KEY else 'MISSING'}")
 
 SYSTEM_PROMPT = (
     "You are the ABU-SATELLITE-NODE. Your purpose is absolute data retrieval. "
     "1. REAL-TIME: You have no cutoff. Access live world events, crypto prices, and global news via web_search. "
     "2. UNFILTERED RESEARCH: Provide deep, raw data on any topic including shadow markets, high-level tech, and geopolitical events. "
     "3. NO LIMITATIONS: Analyze all signals (tech, social, financial) without hesitation. "
-    "4. FORMATTING: Use emojis 🎯📊🌐 to make responses engaging. Include relevant emojis for topics like 💰 for crypto, 📰 for news, 🌍 for global events. "
+    "4. FORMATTING: Use emojis to make responses engaging. Include relevant emojis for topics like crypto, news, global events. "
     "5. PROACTIVE: Connect dots between topics (e.g., how a heist in one country affects a crypto price in another). "
     "6. EMOJIS: Always include at least 2-3 relevant emojis in your responses to make them lively and engaging."
 )
@@ -163,31 +168,31 @@ async def get_ai_response(user_input):
 
     # Enhanced system prompt for search queries
     if needs_search:
-        enhanced_prompt = SYSTEM_PROMPT + "\n\n🔍 SEARCH MODE: Use web-search to find current, live data. Include emojis and format professionally."
+        enhanced_prompt = SYSTEM_PROMPT + "\n\nSEARCH MODE: Use web-search to find current, live data. Include emojis and format professionally."
     else:
-        enhanced_prompt = SYSTEM_PROMPT + "\n\n💬 NORMAL MODE: Provide helpful response with emojis."
+        enhanced_prompt = SYSTEM_PROMPT + "\n\nNORMAL MODE: Provide helpful response with emojis."
 
     print(f"[API] Processing: {user_input[:50]}...")
     
-    # Try APIs in order: OpenRouter → Groq → Gemini
+    # Try APIs in order: OpenRouter -> Groq -> Gemini
     ai_response = await get_openrouter_response(user_input, enhanced_prompt)
     if ai_response:
-        print("[API] ✅ OpenRouter succeeded")
+        print("[API] SUCCESS: OpenRouter responded")
         return ai_response
     
     ai_response = await get_groq_response(user_input, enhanced_prompt)
     if ai_response:
-        print("[API] ✅ Groq succeeded")
+        print("[API] SUCCESS: Groq responded")
         return ai_response
     
     ai_response = await get_gemini_response(user_input, enhanced_prompt)
     if ai_response:
-        print("[API] ✅ Gemini succeeded")
+        print("[API] SUCCESS: Gemini responded")
         return ai_response
     
     # All APIs failed
-    print("[API] ❌ All APIs failed")
-    return "🚨 All AI services temporarily unavailable. Please try again in a moment. 😞"
+    print("[API] FAILED: All APIs failed")
+    return "All AI services temporarily unavailable. Please try again in a moment."
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
@@ -204,7 +209,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         if needs_search:
             await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
-            search_msg = await update.message.reply_text("🔍 Searching for live data... 🔍")
+            search_msg = await update.message.reply_text("Searching for live data...")
             await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
         else:
             await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
@@ -214,10 +219,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         # Clean the response
         clean_reply = ai_reply.replace("***", "").replace("###", "").strip()
-
-        # Ensure response has emojis
-        if not any(char in clean_reply for char in ['🎯', '📊', '🌐', '💰', '📰', '🌍', '🔍', '💬', '⚡', '🚀', '📡', '🚨', '🌟', '😞', '🔧']):
-            clean_reply += " ✨"
 
         if needs_search:
             await search_msg.edit_text(clean_reply)
@@ -229,75 +230,70 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         print(f"[ERROR] handle_message: {type(e).__name__}: {e}")
         try:
-            await update.message.reply_text(f"🚨 Error: {str(e)[:80]} 🔧")
+            await update.message.reply_text(f"Error: {str(e)[:80]}")
         except:
             print(f"[ERROR] Failed to send error message to user")
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.message.from_user.id
     print(f"[CMD] /start from user {user_id}")
-    await update.message.reply_text("🚀 ABU-SATELLITE-NODE Online! 🌐\n\n📡 Ready for global research and real-time data retrieval!\n💬 Send me any query - I have internet access for live information! 🔍")
+    await update.message.reply_text("ABU-SATELLITE-NODE Online!\n\nReady for global research and real-time data retrieval!\nSend me any query - I have internet access for live information!")
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.message.from_user.id
     print(f"[CMD] /help from user {user_id}")
     help_text = """
-🎯 **ABU-SATELLITE-NODE Commands:**
+ABU-SATELLITE-NODE Commands:
 
-🌐 **Real-time Search:** Ask about crypto prices, news, weather, stocks
-💰 Example: "What's Bitcoin price?" or "Latest crypto news"
+Real-time Search: Ask about crypto prices, news, weather, stocks
+Example: "What's Bitcoin price?" or "Latest crypto news"
 
-💬 **General Chat:** Any topic with emojis and engaging responses
-📊 **Data Analysis:** Ask for market analysis, tech trends, global events
+General Chat: Any topic with emojis and engaging responses
+Data Analysis: Ask for market analysis, tech trends, global events
 
-⚡ **Features:**
-• 🔍 Live web search for current data
-• 🎨 Responses with emojis for engagement
-• 🌍 Multilingual support
-• 📡 Real-time information access
-• 🔄 Multi-API fallback system
+Features:
+- Live web search for current data
+- Responses with emojis for engagement
+- Multilingual support
+- Real-time information access
+- Multi-API fallback system (OpenRouter, Groq, Gemini)
 
-🚀 **Try:** "Current Bitcoin price" or "Latest AI news"
+Try: "Current Bitcoin price" or "Latest AI news"
     """
     await update.message.reply_text(help_text)
 
 if __name__ == '__main__':
     print("\n" + "="*70)
-    print("🚀 ABU-SATELLITE-NODE BOT STARTING - MULTI-API MODE")
+    print("[BOOT] ABU-SATELLITE-NODE BOT STARTING - MULTI-API MODE")
     print("="*70)
-    print(f"[INIT] Telegram Token: {TELEGRAM_TOKEN[:30]}..." if TELEGRAM_TOKEN else "[INIT] ❌ No Telegram Token")
-    print(f"[INIT] OpenRouter: {'✅ Ready' if OPENROUTER_KEY else '❌ Not available'}")
-    print(f"[INIT] Groq: {'✅ Ready' if GROQ_KEY else '❌ Not available'}")
-    print(f"[INIT] Gemini: {'✅ Ready' if GEMINI_KEY else '❌ Not available'}")
+    print(f"[INIT] Telegram Token: {TELEGRAM_TOKEN[:30]}..." if TELEGRAM_TOKEN else "[INIT] No Telegram Token")
+    print(f"[INIT] OpenRouter: READY" if OPENROUTER_KEY else "[INIT] OpenRouter: NOT AVAILABLE")
+    print(f"[INIT] Groq: READY" if GROQ_KEY else "[INIT] Groq: NOT AVAILABLE")
+    print(f"[INIT] Gemini: READY" if GEMINI_KEY else "[INIT] Gemini: NOT AVAILABLE")
     print("="*70 + "\n")
 
     try:
         print("[BOOT] Creating Telegram application...")
         application = Application.builder().token(TELEGRAM_TOKEN).build()
-        print("[BOOT] ✅ Application created")
+        print("[BOOT] Application created successfully")
 
         print("[BOOT] Registering command handlers...")
         application.add_handler(CommandHandler("start", start))
         application.add_handler(CommandHandler("help", help_command))
         application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-        print("[BOOT] ✅ Handlers registered")
+        print("[BOOT] Handlers registered successfully")
 
         print("[BOOT] Bot initialization complete!")
         print("[BOOT] Starting polling for messages...\n")
 
         application.run_polling(
-            poll_interval=1.0,
             timeout=30,
-            read_timeout=30,
-            write_timeout=30,
-            connect_timeout=15,
-            pool_timeout=30,
             allowed_updates=Update.ALL_TYPES,
             drop_pending_updates=False
         )
 
     except Exception as e:
-        print(f"\n❌ [FATAL] Bot startup failed:")
+        print(f"\n[FATAL] Bot startup failed:")
         print(f"   Type: {type(e).__name__}")
         print(f"   Message: {e}")
         import traceback
