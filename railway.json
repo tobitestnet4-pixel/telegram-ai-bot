@@ -1,0 +1,21 @@
+{
+  "name": "telegram-ai-bot",
+  "description": "ABU-SATELLITE-NODE - Telegram AI Bot with Real-time Search",
+  "buildCommand": "pip install -r requirements.txt",
+  "startCommand": "python -u bot.py",
+  "env": {
+    "TELEGRAM_BOT_TOKEN": {
+      "description": "Your Telegram Bot Token",
+      "value": "8740139600:AAEGJuDz1Fcaf-STLXZlO0eeAdN9lWNY5HY"
+    },
+    "OPENAI_API_KEY": {
+      "description": "Your OpenRouter API Key",
+      "value": "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"
+    }
+  },
+  "buildpacks": [
+    {
+      "name": "heroku/python"
+    }
+  ]
+}
