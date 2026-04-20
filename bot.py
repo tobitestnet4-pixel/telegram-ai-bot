@@ -82,37 +82,48 @@ async def get_ai_response(user_input):
             return f"📡 Signal Error: {str(e)} 🔧"
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_text = update.message.text
+    try:
+        user_text = update.message.text
+        print(f"DEBUG: Received message: {user_text}")
 
-    # Check if this needs real-time search for loading message
-    needs_search = any(keyword in user_text.lower() for keyword in [
-        'price', 'current', 'latest', 'news', 'crypto', 'bitcoin', 'weather',
-        'market', 'stock', 'breaking', 'update', 'live', 'now', 'today'
-    ])
+        # Check if this needs real-time search for loading message
+        needs_search = any(keyword in user_text.lower() for keyword in [
+            'price', 'current', 'latest', 'news', 'crypto', 'bitcoin', 'weather',
+            'market', 'stock', 'breaking', 'update', 'live', 'now', 'today'
+        ])
 
-    if needs_search:
-        # Show searching message first
-        await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
-        search_msg = await update.message.reply_text("🔍 Searching for live data... 🔍")
-        await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
-    else:
-        # Normal typing indicator
-        await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
+        print(f"DEBUG: Needs search: {needs_search}")
 
-    ai_reply = await get_ai_response(user_text)
+        if needs_search:
+            # Show searching message first
+            await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
+            search_msg = await update.message.reply_text("🔍 Searching for live data... 🔍")
+            await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
+        else:
+            # Normal typing indicator
+            await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
 
-    # Clean the response from any leftover bot-talk or symbols
-    clean_reply = ai_reply.replace("***", "").replace("###", "").strip()
+        ai_reply = await get_ai_response(user_text)
+        print(f"DEBUG: AI reply received: {ai_reply[:100]}...")
 
-    # Ensure response has emojis if it doesn't already
-    if not any(char in clean_reply for char in ['🎯', '📊', '🌐', '💰', '📰', '🌍', '🔍', '💬', '⚡', '🚀', '📡', '🚨', '🌟', '😞', '🔧']):
-        clean_reply += " ✨"
+        # Clean the response from any leftover bot-talk or symbols
+        clean_reply = ai_reply.replace("***", "").replace("###", "").strip()
 
-    # Edit the search message or send new response
-    if needs_search:
-        await search_msg.edit_text(clean_reply)
-    else:
-        await update.message.reply_text(clean_reply)
+        # Ensure response has emojis if it doesn't already
+        if not any(char in clean_reply for char in ['🎯', '📊', '🌐', '💰', '📰', '🌍', '🔍', '💬', '⚡', '🚀', '📡', '🚨', '🌟', '😞', '🔧']):
+            clean_reply += " ✨"
+
+        # Edit the search message or send new response
+        if needs_search:
+            await search_msg.edit_text(clean_reply)
+        else:
+            await update.message.reply_text(clean_reply)
+
+        print(f"DEBUG: Response sent successfully")
+
+    except Exception as e:
+        print(f"ERROR in handle_message: {e}")
+        await update.message.reply_text(f"🚨 Error processing message: {str(e)} 🔧")
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("🚀 ABU-SATELLITE-NODE Online! 🌐\n\n📡 Ready for global research and real-time data retrieval!\n💬 Send me any query - I have internet access for live information! 🔍")
@@ -138,20 +149,30 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(help_text)
 
 if __name__ == '__main__':
+    print("DEBUG: Starting bot...")
+    print(f"DEBUG: Telegram token: {TELEGRAM_TOKEN[:20]}..." if TELEGRAM_TOKEN else "No token")
+    print(f"DEBUG: API key: {API_KEY[:20]}..." if API_KEY else "No API key")
     print("Satellite is scanning... (Bot started)")
     print(f"Using model: {MODEL_NAME}")
 
     try:
+        print("DEBUG: Creating application...")
         application = Application.builder().token(TELEGRAM_TOKEN).build()
+        print("DEBUG: Application created")
 
+        print("DEBUG: Adding handlers...")
         application.add_handler(CommandHandler("start", start))
         application.add_handler(CommandHandler("help", help_command))
         application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+        print("DEBUG: Handlers added")
 
         print("Bot initialized successfully!")
         print("Ready for messages...")
+        print("DEBUG: Starting polling...")
         application.run_polling()
 
     except Exception as e:
         print(f"Bot failed to start: {e}")
         print("Check your environment variables")
+        import traceback
+        traceback.print_exc()
