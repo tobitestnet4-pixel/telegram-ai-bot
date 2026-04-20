@@ -11,17 +11,20 @@ load_dotenv()
 
 # --- CONFIGURATION ---
 TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN') or os.getenv('TELEGRAM_BOT_TOKEN')
-API_KEY = os.getenv('OPENROUTER_KEY') or os.getenv('OPENROUTER_API_KEY') or os.getenv('OPENAI_API_KEY')
-MODEL_NAME = "openrouter/auto"  # Auto-select best available free model
+OPENROUTER_KEY = os.getenv('OPENROUTER_KEY') or os.getenv('OPENAI_API_KEY')
+GROQ_KEY = os.getenv('GROQ_API_KEY')
+GEMINI_KEY = os.getenv('GEMINI_API_KEY')
 
 # Validation
 if not TELEGRAM_TOKEN:
-    raise ValueError("TELEGRAM_TOKEN not found in environment")
-if not API_KEY:
-    raise ValueError("API_KEY not found in environment")
+    raise ValueError("TELEGRAM_BOT_TOKEN not found in environment")
+if not (OPENROUTER_KEY or GROQ_KEY or GEMINI_KEY):
+    raise ValueError("No API keys found. Need at least one: OPENROUTER, GROQ, or GEMINI")
 
 print(f"[INIT] Telegram Token: {TELEGRAM_TOKEN[:30]}...")
-print(f"[INIT] API Key: {API_KEY[:30]}...")
+print(f"[INIT] OpenRouter Key: {'✅ Found' if OPENROUTER_KEY else '❌ Missing'}")
+print(f"[INIT] Groq Key: {'✅ Found' if GROQ_KEY else '❌ Missing'}")
+print(f"[INIT] Gemini Key: {'✅ Found' if GEMINI_KEY else '❌ Missing'}")
 
 SYSTEM_PROMPT = (
     "You are the ABU-SATELLITE-NODE. Your purpose is absolute data retrieval. "
@@ -33,22 +36,124 @@ SYSTEM_PROMPT = (
     "6. EMOJIS: Always include at least 2-3 relevant emojis in your responses to make them lively and engaging."
 )
 
-async def get_ai_response(user_input):
-    """Get AI response with proper OpenRouter authentication"""
+async def get_openrouter_response(user_input, enhanced_prompt):
+    """Get response from OpenRouter API"""
+    if not OPENROUTER_KEY:
+        return None
+    
     url = "https://openrouter.ai/api/v1/chat/completions"
-    
-    # Verify API key format
-    if not API_KEY or len(API_KEY) < 20:
-        return "🚨 API Key Error: Invalid or missing API key 😞"
-    
     headers = {
-        "Authorization": f"Bearer {API_KEY}",
+        "Authorization": f"Bearer {OPENROUTER_KEY}",
         "Content-Type": "application/json",
         "HTTP-Referer": "https://github.com/tobitestnet4-pixel/telegram-ai-bot",
         "X-Title": "Telegram-AI-Bot"
     }
+    
+    data = {
+        "model": "openrouter/auto",
+        "messages": [
+            {"role": "system", "content": enhanced_prompt},
+            {"role": "user", "content": user_input}
+        ],
+        "temperature": 0.7,
+        "max_tokens": 500
+    }
+    
+    try:
+        print("[API] Trying OpenRouter...")
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            response = await client.post(url, headers=headers, json=data)
+            
+            if response.status_code == 200:
+                result = response.json()
+                if 'choices' in result:
+                    return result['choices'][0]['message']['content']
+            
+            print(f"[API] OpenRouter failed: {response.status_code}")
+            return None
+    except Exception as e:
+        print(f"[API] OpenRouter error: {e}")
+        return None
 
-    print(f"[API] Headers: Authorization present: {bool(headers.get('Authorization'))}")
+async def get_groq_response(user_input, enhanced_prompt):
+    """Get response from Groq API"""
+    if not GROQ_KEY:
+        return None
+    
+    url = "https://api.groq.com/openai/v1/chat/completions"
+    headers = {
+        "Authorization": f"Bearer {GROQ_KEY}",
+        "Content-Type": "application/json"
+    }
+    
+    data = {
+        "model": "mixtral-8x7b-32768",
+        "messages": [
+            {"role": "system", "content": enhanced_prompt},
+            {"role": "user", "content": user_input}
+        ],
+        "temperature": 0.7,
+        "max_tokens": 500
+    }
+    
+    try:
+        print("[API] Trying Groq...")
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            response = await client.post(url, headers=headers, json=data)
+            
+            if response.status_code == 200:
+                result = response.json()
+                if 'choices' in result:
+                    return result['choices'][0]['message']['content']
+            
+            print(f"[API] Groq failed: {response.status_code}")
+            return None
+    except Exception as e:
+        print(f"[API] Groq error: {e}")
+        return None
+
+async def get_gemini_response(user_input, enhanced_prompt):
+    """Get response from Google Gemini API"""
+    if not GEMINI_KEY:
+        return None
+    
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent?key={GEMINI_KEY}"
+    headers = {
+        "Content-Type": "application/json"
+    }
+    
+    data = {
+        "contents": [
+            {
+                "parts": [
+                    {"text": f"{enhanced_prompt}\n\nUser: {user_input}"}
+                ]
+            }
+        ],
+        "generationConfig": {
+            "temperature": 0.7,
+            "maxOutputTokens": 500
+        }
+    }
+    
+    try:
+        print("[API] Trying Gemini...")
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            response = await client.post(url, headers=headers, json=data)
+            
+            if response.status_code == 200:
+                result = response.json()
+                if 'candidates' in result and len(result['candidates']) > 0:
+                    return result['candidates'][0]['content']['parts'][0]['text']
+            
+            print(f"[API] Gemini failed: {response.status_code}")
+            return None
+    except Exception as e:
+        print(f"[API] Gemini error: {e}")
+        return None
+
+async def get_ai_response(user_input):
+    """Get AI response with multi-API fallback"""
     
     # Check if this needs real-time search
     needs_search = any(keyword in user_input.lower() for keyword in [
@@ -58,73 +163,31 @@ async def get_ai_response(user_input):
 
     # Enhanced system prompt for search queries
     if needs_search:
-        enhanced_prompt = SYSTEM_PROMPT + "\n\n🔍 SEARCH MODE ACTIVATED: Use web-search to find current, live data. Include emojis and format the response professionally."
+        enhanced_prompt = SYSTEM_PROMPT + "\n\n🔍 SEARCH MODE: Use web-search to find current, live data. Include emojis and format professionally."
     else:
-        enhanced_prompt = SYSTEM_PROMPT + "\n\n💬 NORMAL MODE: Provide helpful response with emojis for engagement."
+        enhanced_prompt = SYSTEM_PROMPT + "\n\n💬 NORMAL MODE: Provide helpful response with emojis."
 
-    # Request payload
-    data = {
-        "model": MODEL_NAME,
-        "messages": [
-            {"role": "system", "content": enhanced_prompt},
-            {"role": "user", "content": user_input}
-        ],
-        "temperature": 0.7,
-        "top_p": 0.9,
-        "max_tokens": 500
-    }
-
-    # Add web search plugin for real-time queries
-    if needs_search:
-        data["plugins"] = [{"id": "web-search"}]
-
-    print(f"[API] Sending request to {url}")
-    print(f"[API] Model: {data['model']}")
-    print(f"[API] Needs search: {needs_search}")
-
-    try:
-        async with httpx.AsyncClient(timeout=120.0, limits=httpx.Limits(max_connections=1)) as client:
-            response = await client.post(url, headers=headers, json=data)
-            
-            print(f"[API] Response status: {response.status_code}")
-            
-            # Try to parse response
-            try:
-                result = response.json()
-            except:
-                print(f"[API] Raw response: {response.text[:200]}")
-                return f"🚨 API Error: Invalid response format 😞"
-            
-            print(f"[API] Response keys: {result.keys() if isinstance(result, dict) else 'not a dict'}")
-            
-            if response.status_code == 200 and 'choices' in result:
-                ai_response = result['choices'][0]['message']['content']
-                print(f"[API] Response received: {ai_response[:100]}...")
-
-                # Ensure emojis are included
-                if not any(char in ai_response for char in ['🎯', '📊', '🌐', '💰', '📰', '🌍', '🔍', '💬', '⚡', '🚀']):
-                    ai_response += " 🌟"
-
-                return ai_response
-            else:
-                error_msg = result.get('error', {})
-                if isinstance(error_msg, dict):
-                    error_text = error_msg.get('message', str(error_msg))
-                else:
-                    error_text = str(error_msg)
-                    
-                print(f"[API] Error response: {error_text}")
-                return f"🚨 API Error: {error_text} 😞"
-
-    except httpx.TimeoutException:
-        print(f"[API] Timeout error")
-        return "🚨 API Timeout: Request took too long 😞"
-    except httpx.HTTPError as e:
-        print(f"[API] HTTP Error: {e}")
-        return f"🚨 API Connection Error: {str(e)[:100]} 🔧"
-    except Exception as e:
-        print(f"[API] Unexpected error: {type(e).__name__}: {e}")
-        return f"📡 Signal Error: {str(e)[:100]} 🔧"
+    print(f"[API] Processing: {user_input[:50]}...")
+    
+    # Try APIs in order: OpenRouter → Groq → Gemini
+    ai_response = await get_openrouter_response(user_input, enhanced_prompt)
+    if ai_response:
+        print("[API] ✅ OpenRouter succeeded")
+        return ai_response
+    
+    ai_response = await get_groq_response(user_input, enhanced_prompt)
+    if ai_response:
+        print("[API] ✅ Groq succeeded")
+        return ai_response
+    
+    ai_response = await get_gemini_response(user_input, enhanced_prompt)
+    if ai_response:
+        print("[API] ✅ Gemini succeeded")
+        return ai_response
+    
+    # All APIs failed
+    print("[API] ❌ All APIs failed")
+    return "🚨 All AI services temporarily unavailable. Please try again in a moment. 😞"
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
@@ -140,25 +203,22 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ])
 
         if needs_search:
-            # Show searching message first
             await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
             search_msg = await update.message.reply_text("🔍 Searching for live data... 🔍")
             await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
         else:
-            # Normal typing indicator
             await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
 
         ai_reply = await get_ai_response(user_text)
         print(f"[MSG] AI reply: {ai_reply[:100]}...")
 
-        # Clean the response from any leftover bot-talk or symbols
+        # Clean the response
         clean_reply = ai_reply.replace("***", "").replace("###", "").strip()
 
-        # Ensure response has emojis if it doesn't already
+        # Ensure response has emojis
         if not any(char in clean_reply for char in ['🎯', '📊', '🌐', '💰', '📰', '🌍', '🔍', '💬', '⚡', '🚀', '📡', '🚨', '🌟', '😞', '🔧']):
             clean_reply += " ✨"
 
-        # Edit the search message or send new response
         if needs_search:
             await search_msg.edit_text(clean_reply)
         else:
@@ -195,19 +255,21 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 • 🎨 Responses with emojis for engagement
 • 🌍 Multilingual support
 • 📡 Real-time information access
+• 🔄 Multi-API fallback system
 
 🚀 **Try:** "Current Bitcoin price" or "Latest AI news"
     """
     await update.message.reply_text(help_text)
 
 if __name__ == '__main__':
-    print("\n" + "="*60)
-    print("🚀 ABU-SATELLITE-NODE BOT STARTING")
-    print("="*60)
+    print("\n" + "="*70)
+    print("🚀 ABU-SATELLITE-NODE BOT STARTING - MULTI-API MODE")
+    print("="*70)
     print(f"[INIT] Telegram Token: {TELEGRAM_TOKEN[:30]}..." if TELEGRAM_TOKEN else "[INIT] ❌ No Telegram Token")
-    print(f"[INIT] API Key: {API_KEY[:30]}..." if API_KEY else "[INIT] ❌ No API Key")
-    print(f"[INIT] Model: {MODEL_NAME}")
-    print("="*60 + "\n")
+    print(f"[INIT] OpenRouter: {'✅ Ready' if OPENROUTER_KEY else '❌ Not available'}")
+    print(f"[INIT] Groq: {'✅ Ready' if GROQ_KEY else '❌ Not available'}")
+    print(f"[INIT] Gemini: {'✅ Ready' if GEMINI_KEY else '❌ Not available'}")
+    print("="*70 + "\n")
 
     try:
         print("[BOOT] Creating Telegram application...")
@@ -240,4 +302,4 @@ if __name__ == '__main__':
         print(f"   Message: {e}")
         import traceback
         traceback.print_exc()
-        print("\n" + "="*60)
+        print("\n" + "="*70)
