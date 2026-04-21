@@ -390,15 +390,8 @@ if __name__ == '__main__':
         )
         
     except Exception as e:
+        print(f"\n[ERROR] {type(e).__name__}: {e}")
         if "Conflict" in str(e):
-            print(f"\n[WARNING] Conflict detected: {e}")
-            print("[ACTION] Waiting 10 seconds before retry...")
-            import time
-            time.sleep(10)
-            print("[RETRY] Attempting restart...")
-            import os
-            os.execv(os.path.abspath(__file__), [os.path.abspath(__file__)])
-        else:
-            print(f"\n[FATAL] {type(e).__name__}: {e}")
-            import traceback
-            traceback.print_exc()
+            print("[RETRY] Conflict detected - will retry on next restart")
+        import traceback
+        traceback.print_exc()
