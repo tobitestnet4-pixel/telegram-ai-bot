@@ -2,17 +2,28 @@ FROM python:3.13-slim
 
 WORKDIR /app
 
+# Install system dependencies (curl for healthcheck)
+RUN apt-get update && apt-get install -y --no-install-recommends curl && rm -rf /var/lib/apt/lists/*
+
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY bot.py .
+COPY bot.py start.sh ./
+RUN chmod +x start.sh
 
-RUN echo '{"free_tier": true, "fallback_mode": false, "current_year": 2026, "supported_languages": ["en","es","fr","de","zh","ja","ar","hi","pt","ru","ko","it","nl","tr","pl","sv","da","no","fi","el","he","th","vi","id","ms","tl","sw","zu","am"], "world_knowledge": {"year": 2026, "major_events": ["AI governance agreements", "quantum computing deployment", "space exploration milestones"], "technologies": ["AGI development", "neural implants", "sustainable energy"]}}' > knowledge.json && \
+# Initialize data files
+RUN echo '{"free_tier": true, "fallback_mode": false, "current_year": 2026}' > knowledge.json && \
     echo "[]" > ai_memory.json && \
     echo "" > error.log && \
     echo "{}" > custom_scripts.json && \
-    echo '{"last_restart_time": 0, "restart_count": 0, "last_restart_user": null}' > restart_tracking.json
+    echo '{"last_restart_time": 0, "restart_count": 0}' > restart_tracking.json
 
 ENV PYTHONUNBUFFERED=1
+ENV PORT=10000
 
-CMD ["python", "-u", "bot.py"]
+EXPOSE 10000
+
+HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
+    CMD curl -f http://localhost:${PORT}/health || exit 1
+
+CMD ["./start.sh"]

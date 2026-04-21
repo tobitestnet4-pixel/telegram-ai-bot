@@ -1,20 +1,36 @@
 #!/bin/bash
-# Render deployment script for Telegram AI Bot
+# Render production entrypoint with gunicorn
 
-echo "[DEPLOY] Starting ABU-SATELLITE-NODE deployment..."
+set -e
 
-# Install dependencies
-pip install --upgrade pip
-pip install -r requirements.txt
+echo "[STARTUP] Initializing bot container..."
+echo "[STARTUP] Python version: $(python --version)"
+echo "[STARTUP] Environment: ${ENVIRONMENT:-development}"
 
-echo "[DEPLOY] Dependencies installed"
+# Verify required environment variables
+if [ -z "$TELEGRAM_BOT_TOKEN" ]; then
+    echo "[ERROR] TELEGRAM_BOT_TOKEN is not set"
+    exit 1
+fi
 
-# Create necessary directories
-mkdir -p logs
-mkdir -p data
+echo "[STARTUP] TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:0:20}..."
+echo "[STARTUP] USE_WEBHOOK: ${USE_WEBHOOK:-true}"
+echo "[STARTUP] PORT: ${PORT:-10000}"
 
-echo "[DEPLOY] Directories created"
-
-# Start bot
-echo "[DEPLOY] Starting bot..."
-python bot.py
+# Run the application with gunicorn for Render
+if [ "$USE_WEBHOOK" = "true" ]; then
+    echo "[STARTUP] Starting with Gunicorn (webhook mode)..."
+    exec gunicorn \
+        --bind 0.0.0.0:${PORT:-10000} \
+        --workers 2 \
+        --threads 2 \
+        --worker-class sync \
+        --timeout 120 \
+        --access-logfile - \
+        --error-logfile - \
+        --log-level info \
+        "bot:app"
+else
+    echo "[STARTUP] Starting with Python (polling mode)..."
+    exec python -u bot.py
+fi

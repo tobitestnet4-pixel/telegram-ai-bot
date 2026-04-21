@@ -1,18 +1,34 @@
 services:
   - type: web
     name: telegram-ai-bot
-    env: python
-    plan: free
-    buildCommand: pip install -r requirements.txt
-    startCommand: python bot.py
+    runtime: docker
+    region: oregon
+    plan: standard
+    numInstances: 1
+    autoDeploy: true
+    dockerfilePath: ./Dockerfile
     envVars:
-      - key: TELEGRAM_BOT_TOKEN
-        scope: "*"
-      - key: OPENAI_API_KEY
-        scope: "*"
-      - key: GROQ_API_KEY
-        scope: "*"
-      - key: GEMINI_API_KEY
-        scope: "*"
+      - key: ENVIRONMENT
+        value: production
+      - key: USE_WEBHOOK
+        value: "true"
       - key: PORT
-        value: "8443"
+        value: "10000"
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: GROQ_API_KEY
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: OPENROUTER_KEY
+        sync: false
+      - key: WEBHOOK_URL
+        fromService:
+          name: telegram-ai-bot
+          property: url
+          path: /webhook
+    healthCheckPath: /health
+    healthCheckStartFailureThresholdCount: 5
+    healthCheckThresholdCount: 3

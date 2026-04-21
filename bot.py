@@ -10,6 +10,8 @@ import httpx
 import json
 import sqlite3
 import logging
+import asyncio
+import signal
 from datetime import datetime
 from typing import Optional, List, Dict
 from enum import Enum
@@ -36,11 +38,14 @@ OPENROUTER_KEY = os.getenv('OPENROUTER_KEY') or os.getenv('OPENAI_API_KEY')
 GROQ_KEY = os.getenv('GROQ_API_KEY')
 GEMINI_KEY = os.getenv('GEMINI_API_KEY')
 PORT = int(os.getenv('PORT', 10000))
+USE_WEBHOOK = os.getenv('USE_WEBHOOK', 'true').lower() == 'true'
+WEBHOOK_URL = os.getenv('WEBHOOK_URL', '')
+ENV = os.getenv('ENVIRONMENT', 'development')
 
 if not TELEGRAM_TOKEN:
     raise ValueError("[FATAL] TELEGRAM_BOT_TOKEN required")
 
-logger.info(f"System initialization: Token={TELEGRAM_TOKEN[:30]}... | Port={PORT}")
+logger.info(f"System initialization: Token={TELEGRAM_TOKEN[:30]}... | Port={PORT} | Mode={'WEBHOOK' if USE_WEBHOOK else 'POLLING'} | Env={ENV}")
 
 # === ENUMS ===
 class AIProvider(Enum):
@@ -389,80 +394,104 @@ class AIRouter:
     
     @staticmethod
     async def _get_gemini_response(query: str) -> Optional[str]:
-        """Gemini API call"""
+        """Gemini API call with exponential backoff"""
         if not GEMINI_KEY:
             return None
-        try:
-            response = httpx.post(
-                f"https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent?key={GEMINI_KEY}",
-                headers={"Content-Type": "application/json"},
-                json={
-                    "contents": [{"parts": [{"text": query}]}],
-                    "generationConfig": {"temperature": 0.7, "maxOutputTokens": 1000}
-                },
-                timeout=20
-            )
-            if response.status_code == 200:
-                result = response.json()
-                if 'candidates' in result and len(result['candidates']) > 0:
-                    return result['candidates'][0]['content']['parts'][0]['text']
-        except Exception as e:
-            logger.warning(f"[GEMINI] Error: {e}")
+        for attempt in range(3):
+            try:
+                async with httpx.AsyncClient(timeout=20) as client:
+                    response = await client.post(
+                        f"https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent?key={GEMINI_KEY}",
+                        headers={"Content-Type": "application/json"},
+                        json={
+                            "contents": [{"parts": [{"text": query}]}],
+                            "generationConfig": {"temperature": 0.7, "maxOutputTokens": 1000}
+                        }
+                    )
+                    if response.status_code == 200:
+                        result = response.json()
+                        if 'candidates' in result and len(result['candidates']) > 0:
+                            return result['candidates'][0]['content']['parts'][0]['text']
+                    elif response.status_code >= 500:
+                        await asyncio.sleep(2 ** attempt)  # Exponential backoff
+                        continue
+            except (httpx.TimeoutException, httpx.ConnectError) as e:
+                logger.warning(f"[GEMINI] Attempt {attempt+1}/3 failed: {e}")
+                if attempt < 2:
+                    await asyncio.sleep(2 ** attempt)
+            except Exception as e:
+                logger.warning(f"[GEMINI] Error: {e}")
         return None
     
     @staticmethod
     async def _get_groq_response(query: str) -> Optional[str]:
-        """Groq API call"""
+        """Groq API call with exponential backoff"""
         if not GROQ_KEY:
             return None
-        try:
-            response = httpx.post(
-                "https://api.groq.com/openai/v1/chat/completions",
-                headers={"Authorization": f"Bearer {GROQ_KEY}", "Content-Type": "application/json"},
-                json={
-                    "model": "mixtral-8x7b-32768",
-                    "messages": [{"role": "user", "content": query}],
-                    "temperature": 0.7,
-                    "max_tokens": 1000
-                },
-                timeout=20
-            )
-            if response.status_code == 200:
-                result = response.json()
-                if 'choices' in result:
-                    return result['choices'][0]['message']['content']
-        except Exception as e:
-            logger.warning(f"[GROQ] Error: {e}")
+        for attempt in range(3):
+            try:
+                async with httpx.AsyncClient(timeout=20) as client:
+                    response = await client.post(
+                        "https://api.groq.com/openai/v1/chat/completions",
+                        headers={"Authorization": f"Bearer {GROQ_KEY}", "Content-Type": "application/json"},
+                        json={
+                            "model": "mixtral-8x7b-32768",
+                            "messages": [{"role": "user", "content": query}],
+                            "temperature": 0.7,
+                            "max_tokens": 1000
+                        }
+                    )
+                    if response.status_code == 200:
+                        result = response.json()
+                        if 'choices' in result:
+                            return result['choices'][0]['message']['content']
+                    elif response.status_code >= 500:
+                        await asyncio.sleep(2 ** attempt)
+                        continue
+            except (httpx.TimeoutException, httpx.ConnectError) as e:
+                logger.warning(f"[GROQ] Attempt {attempt+1}/3 failed: {e}")
+                if attempt < 2:
+                    await asyncio.sleep(2 ** attempt)
+            except Exception as e:
+                logger.warning(f"[GROQ] Error: {e}")
         return None
     
     @staticmethod
     async def _get_openai_response(query: str) -> Optional[str]:
-        """OpenAI/OpenRouter API call (for critical coding)"""
+        """OpenAI/OpenRouter API call with exponential backoff"""
         if not OPENROUTER_KEY:
             return None
-        try:
-            response = httpx.post(
-                "https://openrouter.ai/api/v1/chat/completions",
-                headers={
-                    "Authorization": f"Bearer {OPENROUTER_KEY}",
-                    "Content-Type": "application/json",
-                    "HTTP-Referer": "https://github.com/tobitestnet4-pixel/telegram-ai-bot",
-                    "X-Title": "ABU-SATELLITE-NODE-v4"
-                },
-                json={
-                    "model": "openrouter/auto",
-                    "messages": [{"role": "user", "content": query}],
-                    "temperature": 0.3,
-                    "max_tokens": 1000
-                },
-                timeout=20
-            )
-            if response.status_code == 200:
-                result = response.json()
-                if 'choices' in result:
-                    return result['choices'][0]['message']['content']
-        except Exception as e:
-            logger.warning(f"[OPENAI] Error: {e}")
+        for attempt in range(3):
+            try:
+                async with httpx.AsyncClient(timeout=20) as client:
+                    response = await client.post(
+                        "https://openrouter.ai/api/v1/chat/completions",
+                        headers={
+                            "Authorization": f"Bearer {OPENROUTER_KEY}",
+                            "Content-Type": "application/json",
+                            "HTTP-Referer": "https://github.com/tobitestnet4-pixel/telegram-ai-bot",
+                            "X-Title": "ABU-SATELLITE-NODE-v4"
+                        },
+                        json={
+                            "model": "openrouter/auto",
+                            "messages": [{"role": "user", "content": query}],
+                            "temperature": 0.3,
+                            "max_tokens": 1000
+                        }
+                    )
+                    if response.status_code == 200:
+                        result = response.json()
+                        if 'choices' in result:
+                            return result['choices'][0]['message']['content']
+                    elif response.status_code >= 500:
+                        await asyncio.sleep(2 ** attempt)
+                        continue
+            except (httpx.TimeoutException, httpx.ConnectError) as e:
+                logger.warning(f"[OPENAI] Attempt {attempt+1}/3 failed: {e}")
+                if attempt < 2:
+                    await asyncio.sleep(2 ** attempt)
+            except Exception as e:
+                logger.warning(f"[OPENAI] Error: {e}")
         return None
 
 # === COMMAND HANDLERS ===
@@ -554,32 +583,28 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # === FLASK APP ===
 app = Flask(__name__)
-application = Application.builder().token(TELEGRAM_TOKEN).build()
+application = None
+app_startup_done = False
 
-@app.route('/webhook', methods=['POST'])
-def webhook():
-    """Webhook handler"""
-    try:
-        update_json = request.get_json()
-        update = Update.de_json(update_json, application.bot)
-        application.process_update(update)
-        return jsonify({'ok': True}), 200
-    except Exception as e:
-        logger.error(f"[WEBHOOK] Error: {e}")
-        return jsonify({'ok': False}), 500
+class GracefulShutdown:
+    """Handle graceful shutdown for Render"""
+    def __init__(self):
+        self.should_exit = False
+    
+    def handle_signal(self, signum, frame):
+        logger.info(f"[SHUTDOWN] Signal {signum} received. Gracefully shutting down...")
+        self.should_exit = True
 
-@app.route('/health', methods=['GET'])
-def health():
-    return jsonify({'status': 'ok', 'version': 'v4.0'}), 200
+shutdown_handler = GracefulShutdown()
 
-@app.route('/stats', methods=['GET'])
-def stats():
-    return jsonify(db.get_stats()), 200
-
-if __name__ == '__main__':
-    logger.info("\n" + "="*70)
-    logger.info("[BOOT] ABU-SATELLITE-NODE v4.0 - ENTERPRISE STARTUP")
-    logger.info("="*70)
+async def initialize_application():
+    """Initialize Telegram application asynchronously"""
+    global application, app_startup_done
+    if app_startup_done:
+        return
+    
+    logger.info("[BOOT] Initializing Telegram application...")
+    application = Application.builder().token(TELEGRAM_TOKEN).build()
     
     # Register commands
     application.add_handler(CommandHandler("start", handle_start))
@@ -593,6 +618,81 @@ if __name__ == '__main__':
     logger.info("[BOOT] AI Router: ✅")
     logger.info("[BOOT] Production Database: ✅")
     logger.info("[BOOT] User Preferences: ✅")
-    logger.info(f"[BOOT] Starting Flask server on {PORT}...")
     
-    app.run(host='0.0.0.0', port=PORT, debug=False)
+    if USE_WEBHOOK and WEBHOOK_URL:
+        logger.info(f"[BOOT] Setting webhook to: {WEBHOOK_URL}")
+        await application.bot.set_webhook(WEBHOOK_URL)
+    
+    app_startup_done = True
+
+@app.before_request
+async def before_request():
+    """Initialize app before first request"""
+    if not app_startup_done:
+        await initialize_application()
+
+@app.route('/webhook', methods=['POST'])
+async def webhook():
+    """Webhook handler (Render production mode)"""
+    if not app_startup_done:
+        await initialize_application()
+    
+    try:
+        update_json = request.get_json()
+        if not update_json:
+            return jsonify({'ok': False, 'error': 'Empty body'}), 400
+        
+        update = Update.de_json(update_json, application.bot)
+        await application.process_update(update)
+        logger.debug(f"[WEBHOOK] Processed update {update.update_id}")
+        return jsonify({'ok': True}), 200
+    except Exception as e:
+        logger.error(f"[WEBHOOK] Error: {e}", exc_info=True)
+        return jsonify({'ok': False, 'error': str(e)}), 500
+
+@app.route('/health', methods=['GET'])
+def health():
+    """Health check endpoint"""
+    return jsonify({
+        'status': 'ok',
+        'version': 'v4.0',
+        'mode': 'webhook' if USE_WEBHOOK else 'polling',
+        'timestamp': datetime.now().isoformat()
+    }), 200
+
+@app.route('/stats', methods=['GET'])
+def stats():
+    """Statistics endpoint"""
+    return jsonify(db.get_stats()), 200
+
+async def start_polling():
+    """Start polling mode (development only)"""
+    await initialize_application()
+    logger.info("[BOOT] Starting polling mode (development only)...")
+    async with application:
+        await application.start()
+        logger.info("[POLLING] Bot started. Listening for updates...")
+        await application.updater.start_polling(
+            allowed_updates=Update.ALL_TYPES,
+            error_callback=lambda u, e: logger.error(f"[POLLING ERROR] {e}")
+        )
+        while not shutdown_handler.should_exit:
+            await asyncio.sleep(1)
+        await application.stop()
+        logger.info("[POLLING] Bot stopped gracefully.")
+
+if __name__ == '__main__':
+    logger.info("\n" + "="*70)
+    logger.info("[BOOT] ABU-SATELLITE-NODE v4.0 - ENTERPRISE STARTUP")
+    logger.info(f"[BOOT] Environment: {ENV} | Mode: {'WEBHOOK' if USE_WEBHOOK else 'POLLING'}")
+    logger.info("="*70)
+    
+    signal.signal(signal.SIGTERM, shutdown_handler.handle_signal)
+    signal.signal(signal.SIGINT, shutdown_handler.handle_signal)
+    
+    if USE_WEBHOOK:
+        logger.info(f"[BOOT] Starting webhook server on {PORT}...")
+        app.run(host='0.0.0.0', port=PORT, debug=False, threaded=True)
+    else:
+        logger.info(f"[BOOT] Starting polling mode on port {PORT}...")
+        asyncio.run(start_polling())
