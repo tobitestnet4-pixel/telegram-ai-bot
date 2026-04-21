@@ -382,10 +382,10 @@ if __name__ == '__main__':
         app.add_handler(CommandHandler("feedback", feedback_command))
         app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
         
-        print("[BOOT] Starting webhook...")
+        print("[BOOT] Starting polling...")
         app.run_polling(
             timeout=30,
-            allowed_updates=['message'],
+            allowed_updates=Update.ALL_TYPES,
             drop_pending_updates=False
         )
         
