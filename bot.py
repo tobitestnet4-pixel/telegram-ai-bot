@@ -386,10 +386,19 @@ if __name__ == '__main__':
         app.run_polling(
             timeout=30,
             allowed_updates=Update.ALL_TYPES,
-            drop_pending_updates=False
+            drop_pending_updates=True
         )
         
     except Exception as e:
-        print(f"\n[FATAL] {type(e).__name__}: {e}")
-        import traceback
-        traceback.print_exc()
+        if "Conflict" in str(e):
+            print(f"\n[WARNING] Conflict detected: {e}")
+            print("[ACTION] Waiting 10 seconds before retry...")
+            import time
+            time.sleep(10)
+            print("[RETRY] Attempting restart...")
+            import os
+            os.execv(os.path.abspath(__file__), [os.path.abspath(__file__)])
+        else:
+            print(f"\n[FATAL] {type(e).__name__}: {e}")
+            import traceback
+            traceback.print_exc()
