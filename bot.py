@@ -12,6 +12,7 @@ import sqlite3
 import logging
 import asyncio
 import signal
+import concurrent.futures
 from datetime import datetime
 from typing import Optional, List, Dict
 from enum import Enum
@@ -350,7 +351,7 @@ class AIRouter:
     """Route queries to appropriate AI with smart logic"""
     
     @staticmethod
-    async def get_response(user_id: int, query: str, force_ai: Optional[str] = None) -> tuple[str, str, float]:
+    async def get_response(user_id: int, query: str, force_ai: Optional[str] = None) -> tuple:
         """Get response from appropriate AI"""
         import time
         start_time = time.time()
@@ -361,36 +362,28 @@ class AIRouter:
         
         logger.info(f"[ROUTING] Query type: {query_type.value} | Preferred: {preferred_ai}")
         
-        # Routing logic: Gemini → Groq → OpenAI (for coding)
-        if query_type == QueryType.CODING:
-            # Critical coding: Use OpenAI
-            response = await AIRouter._get_openai_response(query)
-            if response:
-                elapsed = time.time() - start_time
-                db.log_conversation(user_id, query_type.value, query, "openai", response, elapsed)
-                return response, "openai", elapsed
+        # Try all APIs in order
+        apis = [
+            ('gemini', AIRouter._get_gemini_response),
+            ('groq', AIRouter._get_groq_response),
+            ('openai', AIRouter._get_openai_response),
+        ]
         
-        # Default: Gemini → Groq fallback
-        response = await AIRouter._get_gemini_response(query)
-        if response:
-            elapsed = time.time() - start_time
-            db.log_conversation(user_id, query_type.value, query, "gemini", response, elapsed)
-            return response, "gemini", elapsed
+        for api_name, api_func in apis:
+            try:
+                response = await api_func(query)
+                if response:
+                    elapsed = time.time() - start_time
+                    logger.info(f"[ROUTING] {api_name.upper()} responded in {elapsed:.2f}s")
+                    db.log_conversation(user_id, query_type.value, query, api_name, response, elapsed)
+                    return response, api_name, elapsed
+            except Exception as e:
+                logger.warning(f"[ROUTING] {api_name.upper()} failed: {e}")
+                continue
         
-        response = await AIRouter._get_groq_response(query)
-        if response:
-            elapsed = time.time() - start_time
-            db.log_conversation(user_id, query_type.value, query, "groq", response, elapsed)
-            return response, "groq", elapsed
-        
-        # Final fallback
-        response = await AIRouter._get_openai_response(query)
-        if response:
-            elapsed = time.time() - start_time
-            db.log_conversation(user_id, query_type.value, query, "openai", response, elapsed)
-            return response, "openai", elapsed
-        
-        return "All AI services currently unavailable. Please try again.", "unavailable", time.time() - start_time
+        # Fallback response
+        fallback = "I'm having trouble reaching my AI services right now. Please try again in a moment."
+        return fallback, "unavailable", time.time() - start_time
     
     @staticmethod
     async def _get_gemini_response(query: str) -> Optional[str]:
@@ -413,7 +406,7 @@ class AIRouter:
                         if 'candidates' in result and len(result['candidates']) > 0:
                             return result['candidates'][0]['content']['parts'][0]['text']
                     elif response.status_code >= 500:
-                        await asyncio.sleep(2 ** attempt)  # Exponential backoff
+                        await asyncio.sleep(2 ** attempt)
                         continue
             except (httpx.TimeoutException, httpx.ConnectError) as e:
                 logger.warning(f"[GEMINI] Attempt {attempt+1}/3 failed: {e}")
@@ -561,6 +554,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     text = update.message.text
     
+    logger.info(f"[MESSAGE] User {user_id}: {text}")
+    
     await update.message.chat.send_action(ChatAction.TYPING)
     
     await messenger.publish(MessageChannel.USER, {
@@ -572,6 +567,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     msg = f"{response}\n\n"
     msg += f"_🤖 Powered by {ai_used.upper()} ({response_time:.2f}s)_"
+    
+    logger.info(f"[RESPONSE] Sending to {user_id}: {ai_used} ({response_time:.2f}s)")
     
     await update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN)
     
@@ -621,29 +618,50 @@ async def initialize_application():
     
     if USE_WEBHOOK and WEBHOOK_URL:
         logger.info(f"[BOOT] Setting webhook to: {WEBHOOK_URL}")
-        await application.bot.set_webhook(WEBHOOK_URL)
+        try:
+            await application.bot.set_webhook(WEBHOOK_URL)
+            logger.info("[BOOT] Webhook registered successfully")
+        except Exception as e:
+            logger.error(f"[BOOT] Webhook registration failed: {e}")
     
     app_startup_done = True
 
+def _run_async(coro):
+    """Run async code in Flask sync context"""
+    try:
+        loop = asyncio.get_event_loop()
+        if loop.is_running():
+            with concurrent.futures.ThreadPoolExecutor() as executor:
+                future = executor.submit(asyncio.run, coro)
+                return future.result(timeout=30)
+        else:
+            return asyncio.run(coro)
+    except RuntimeError:
+        return asyncio.run(coro)
+
 @app.before_request
-async def before_request():
+def before_request():
     """Initialize app before first request"""
+    global app_startup_done
     if not app_startup_done:
-        await initialize_application()
+        _run_async(initialize_application())
 
 @app.route('/webhook', methods=['POST'])
-async def webhook():
+def webhook():
     """Webhook handler (Render production mode)"""
+    global app_startup_done
     if not app_startup_done:
-        await initialize_application()
+        _run_async(initialize_application())
     
     try:
         update_json = request.get_json()
         if not update_json:
+            logger.warning("[WEBHOOK] Empty body received")
             return jsonify({'ok': False, 'error': 'Empty body'}), 400
         
+        logger.info(f"[WEBHOOK] Received update: {update_json.get('update_id')}")
         update = Update.de_json(update_json, application.bot)
-        await application.process_update(update)
+        _run_async(application.process_update(update))
         logger.debug(f"[WEBHOOK] Processed update {update.update_id}")
         return jsonify({'ok': True}), 200
     except Exception as e:
